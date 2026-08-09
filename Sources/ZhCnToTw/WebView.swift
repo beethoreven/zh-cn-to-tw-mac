@@ -142,5 +142,27 @@ struct WebView: NSViewRepresentable {
             popupWindows[index].close()
             popupWindows.remove(at: index)
         }
+
+        // <input type="file"> 點下去要跳出真正的檔案選擇視窗，在 macOS
+        // 上一旦 WKWebView 有設定 uiDelegate（我們因為上面的登入彈出視窗
+        // 需要，一定要設），內建的檔案選擇行為就不會自動生效，一定要自己
+        // 實作這個方法用 NSOpenPanel 接手，不然點擊完全沒反應（這個操作
+        // 本來就不會有任何 console 訊息，不管有沒有正常運作都一樣，不是
+        // 判斷依據）。
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.canChooseFiles = true
+
+            panel.begin { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        }
     }
 }
