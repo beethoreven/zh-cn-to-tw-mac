@@ -26,6 +26,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources/ocr-service"
 
 cp "$REPO_ROOT/.build/$CONFIG/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$REPO_ROOT/packaging/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$REPO_ROOT/packaging/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 if [ -d "$OCR_SERVICE_DIST_DIR" ]; then
   # PyInstaller onedir 產出的執行檔跟 _internal/ 資料夾要維持同層關係，

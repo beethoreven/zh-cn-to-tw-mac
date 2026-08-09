@@ -118,6 +118,15 @@ struct WebView: NSViewRepresentable {
             )
             window.title = "登入"
             window.contentView = popupWebView
+            // 這個視窗是我們自己手動 alloc/init 出來、用 popupWindows 陣列
+            // 以 ARC 管理生命週期的，不是透過 NSWindowController；一定要
+            // 關掉 isReleasedWhenClosed（預設是 true），不然 AppKit 自己
+            // 在 close() 時也會嘗試釋放這個視窗物件，兩邊都想釋放同一個
+            // 物件，會在關閉動畫收尾、autorelease pool 清理時把它重複
+            // 釋放掉，變成存取已經被釋放的記憶體，直接讓整個 App crash
+            // （實測抓到：EXC_BAD_ACCESS 在
+            // -[_NSWindowTransformAnimation dealloc]，正是這個典型問題）。
+            window.isReleasedWhenClosed = false
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

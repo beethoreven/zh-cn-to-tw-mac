@@ -49,7 +49,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(minWidth: 900, minHeight: 700)
+        // 900x700 放大 20%（原本預設大小偏小）。用 idealWidth/idealHeight
+        // 讓這組數字也是視窗第一次開啟時的大小，不是只當作最小值。
+        .frame(minWidth: 1080, idealWidth: 1080, minHeight: 840, idealHeight: 840)
     }
 
     private func desktopURL(ocrPort: Int) -> URL {
