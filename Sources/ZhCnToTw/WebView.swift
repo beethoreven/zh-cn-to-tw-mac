@@ -58,6 +58,8 @@ struct WebView: NSViewRepresentable {
             webView.isInspectable = true
         }
 
+        webView.uiDelegate = context.coordinator
+
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
         return webView
     }
@@ -66,9 +68,17 @@ struct WebView: NSViewRepresentable {
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate {
         private var lastURL: URL?
         private var lastReloadToken: UUID?
+
+        // Google 登入用 window.open() 開一個彈出視窗跑 OAuth 流程，但
+        // WKWebView 預設完全不處理 window.open()——瀏覽器都有內建的彈出
+        // 視窗處理邏輯，WKWebView 沒有，不實作這個 delegate 方法的話
+        // window.open() 在 JS 那端就直接失敗，Google 的 SDK 會印出
+        // "Failed to open popup window... Maybe blocked by the browser?"。
+        // 這裡持有已開啟的彈出視窗，避免視窗物件被提早釋放掉。
+        private var popupWindows: [NSWindow] = []
 
         func load(url: URL, reloadToken: UUID, into webView: WKWebView) {
             guard url != lastURL || reloadToken != lastReloadToken else { return }
@@ -81,6 +91,45 @@ struct WebView: NSViewRepresentable {
             _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
         ) {
             print("[webview-console] \(message.body)")
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // 一定要用傳進來的同一個 configuration 物件（不能自己另外造
+            // 一個新的）——window.opener/postMessage 這種跨視窗溝通機制
+            // 靠的就是這個共用的 configuration/process pool，用不同的
+            // configuration 建立的視窗，Google 的 SDK 完成登入後會沒辦法
+            // 把結果傳回原本那個視窗。
+            let popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 480, height: 640), configuration: configuration)
+            popupWebView.uiDelegate = self
+            if #available(macOS 13.3, *) {
+                popupWebView.isInspectable = true
+            }
+
+            let window = NSWindow(
+                contentRect: popupWebView.frame,
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "登入"
+            window.contentView = popupWebView
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+
+            popupWindows.append(window)
+            return popupWebView
+        }
+
+        // Google 的登入流程跑完後，彈出視窗那邊的 JS 會呼叫 window.close()
+        // 把自己關掉（跟一般瀏覽器完成 OAuth popup 流程後的行為一樣）。
+        func webViewDidClose(_ webView: WKWebView) {
+            popupWindows.removeAll { $0.contentView === webView }
         }
     }
 }
