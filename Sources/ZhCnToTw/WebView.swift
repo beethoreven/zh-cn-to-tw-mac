@@ -48,6 +48,16 @@ struct WebView: NSViewRepresentable {
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
+
+        // 開發階段用：讓這個 WKWebView 可以被 Safari 的「開發」選單掛上
+        // 完整的 Web Inspector（網路請求、DOM、真正的中斷點），比自己搭的
+        // console 轉送橋接看得更完整——console 轉送完全沒訊息時，代表
+        // 問題可能更底層（例如某個 iframe 根本沒載入成功），需要這個
+        // 才能繼續往下查。macOS 13.3 以上才有這個 API。
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
+
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
         return webView
     }
