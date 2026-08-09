@@ -8,7 +8,19 @@ struct ContentView: View {
     // 改版不需要重新發版整個桌面 App——見 desktop_app_plan 設計文件。如果
     // 之後網站關站、改成殼直接內嵌網頁資源，這裡要換成本機 bundle 裡的
     // file:// 路徑。
-    private let webBaseURL = URL(string: "https://beethoreven.github.io/zh-cn-to-tw-web/")!
+    //
+    // WEB_BASE_URL_OVERRIDE 只在開發階段用：指到本機跑的
+    // `python3 -m http.server` 網址（例如 http://localhost:8123/），
+    // 這樣本機測試時載入的前端才會是還沒 push 上 GitHub Pages 的最新
+    // 程式碼；script.js 本身已經會偵測 hostname 是 localhost/127.0.0.1
+    // 就自動改打本機 backend（127.0.0.1:5001），不需要在這裡額外處理。
+    private let webBaseURL: URL = {
+        if let override = ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"],
+           let url = URL(string: override) {
+            return url
+        }
+        return URL(string: "https://beethoreven.github.io/zh-cn-to-tw-web/")!
+    }()
 
     var body: some View {
         VStack(spacing: 0) {
