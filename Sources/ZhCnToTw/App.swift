@@ -5,6 +5,18 @@ import AppKit
 struct ZhCnToTwApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    init() {
+        // 目前這個殼還是 swift build 產出的裸執行檔，沒有正式的 Info.plist
+        // 宣告支援哪些語言，WKWebView 內建的原生控制項文字（例如檔案選擇
+        // 按鈕的「Choose File / no file selected」）因此可能抓不到「這個
+        // App 支援繁體中文」的資訊、退回英文。用 AppleLanguages 這個
+        // UserDefaults 標準機制明確指定語言偏好，要在任何視窗/WKWebView
+        // 建立之前設好才有效，所以放在 App 的 init() 這個全程式最早的
+        // 進入點——之後包成正式 .app 時應該改成在 Info.plist 宣告
+        // CFBundleLocalizations，這裡就可以拿掉。
+        UserDefaults.standard.set(["zh-Hant-TW", "zh-Hant", "zh"], forKey: "AppleLanguages")
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
