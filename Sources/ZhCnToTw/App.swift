@@ -17,6 +17,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let ocrManager = OCRServiceManager(executableURL: AppDelegate.resolveOCRServiceExecutable())
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 目前是用 `swift build` 產出的裸執行檔直接執行（還沒包成正式的
+        // .app bundle 給 LaunchServices 開），這種啟動方式下 macOS 常常
+        // 不會自動把這個視窗設成使用中/最前面的 App，導致視窗有畫面但
+        // 完全收不到滑鼠/鍵盤事件（沒有 hover state、點擊沒反應）。
+        // 明確要求變成一般前景 App 並取得焦點，解決這個問題；等之後包成
+        // 真正的 .app 由 Finder/Dock 開啟時，這兩行是多餘但無害的。
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         ocrManager.start()
     }
 
