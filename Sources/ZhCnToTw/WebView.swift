@@ -129,7 +129,9 @@ struct WebView: NSViewRepresentable {
         // Google 的登入流程跑完後，彈出視窗那邊的 JS 會呼叫 window.close()
         // 把自己關掉（跟一般瀏覽器完成 OAuth popup 流程後的行為一樣）。
         func webViewDidClose(_ webView: WKWebView) {
-            popupWindows.removeAll { $0.contentView === webView }
+            guard let index = popupWindows.firstIndex(where: { $0.contentView === webView }) else { return }
+            popupWindows[index].close()
+            popupWindows.remove(at: index)
         }
     }
 }
