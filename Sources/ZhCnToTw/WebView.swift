@@ -84,7 +84,15 @@ struct WebView: NSViewRepresentable {
             guard url != lastURL || reloadToken != lastReloadToken else { return }
             lastURL = url
             lastReloadToken = reloadToken
-            webView.load(URLRequest(url: url))
+            // WKWebView 有自己的持久化快取（跟 Safari 一樣存在硬碟上，
+            // 重開整個 App process 不會清掉）。桌面殼載入的是線上網址，
+            // 整個設計的前提就是「前端改版不用重新發版桌面 App」——如果
+            // WebView 用舊快取的 CSS/JS，這個前提就不成立了。明確要求
+            // 略過本機快取、每次都真的去抓最新版本（實測發現：重開整個
+            // App 好幾次，畫面還是抓到舊版 CSS，就是這裡沒做的緣故）。
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            webView.load(request)
         }
 
         func userContentController(
