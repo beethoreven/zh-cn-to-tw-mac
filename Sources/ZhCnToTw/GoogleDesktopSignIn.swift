@@ -51,9 +51,14 @@ final class GoogleDesktopSignIn {
 
         let listener: NWListener
         do {
+            // 只能用一種方式指定 port，不能兩邊都設：requiredLocalEndpoint
+            // 已經同時帶了 host + port，若再額外傳 on: port 給
+            // NWListener 的初始化參數，兩邊互相衝突，底層網路堆疊會直接
+            // 回報「參數不合法」（NWError 22 / EINVAL），不是真的 port
+            // 被占用（實測抓到：這個錯誤訊息很容易誤導成是 port 衝突）。
             let params = NWParameters.tcp
             params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: port)
-            listener = try NWListener(using: params, on: port)
+            listener = try NWListener(using: params)
         } catch {
             finish(.failure(.listenerFailed(
                 "無法監聽本機 127.0.0.1:\(Self.loopbackPort)（可能被其他程式占用）：\(error.localizedDescription)"
