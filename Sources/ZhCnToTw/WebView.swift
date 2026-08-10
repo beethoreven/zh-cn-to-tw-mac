@@ -215,6 +215,57 @@ struct WebView: NSViewRepresentable {
             }
         }
 
+        // JS 的 alert()/confirm()/prompt() 在 WKWebView 裡預設完全沒有
+        // UI 顯示——不是跳出來又太快消失，是根本不會出現，呼叫了就像
+        // 什麼事都沒發生一樣，要自己用 NSAlert 接手才會真的顯示。這個
+        // 專案的 script.js 目前有 9 處用 alert() 顯示驗證錯誤/操作結果
+        // （例如「請先選擇 PDF 檔案」），這幾個提示在桌面版原本應該完全
+        // 靜默失效，屬於同一批「WKWebView 沒有瀏覽器內建行為」的問題，
+        // 一次補齊，避免之後在別的地方（例如管理員介面的刪除確認）用到
+        // confirm() 又重踩一次同一種坑。
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping () -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            completionHandler()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (Bool) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "確定")
+            alert.addButton(withTitle: "取消")
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptTextInputPanelWithPrompt prompt: String,
+            defaultText: String?,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (String?) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.messageText = prompt
+            alert.addButton(withTitle: "確定")
+            alert.addButton(withTitle: "取消")
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+            input.stringValue = defaultText ?? ""
+            alert.accessoryView = input
+            completionHandler(alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil)
+        }
+
         // 下載按鈕（例如「下載校對後成果」）背後是 fetch 拿到 blob 再用
         // <a download href="blob:..."> 模擬點擊觸發下載，這是一般瀏覽器
         // 支援的標準做法，但 WKWebView 預設不知道怎麼處理這種下載型的
@@ -222,12 +273,32 @@ struct WebView: NSViewRepresentable {
         // 導覽，明確交給 WKDownload 處理，才會真的觸發下載（跟今晚檔案
         // 選擇按鈕、登入彈出視窗是同一種「WKWebView 沒有瀏覽器內建行為，
         // 要自己實作對應 delegate 方法」的問題）。
+        //
+        // 另外：這個殼沒有網址列、沒有上一頁按鈕，如果頁面上出現連到
+        // 別的網域的連結（目前 index.html 裡沒有，但之後可能會加，例如
+        // 說明文件連結），使用者點下去如果讓這個 WebView 直接導覽過去，
+        // 會被困在別的網站、沒有正常方式回到 App 本身——改成偵測到
+        // 「使用者點擊連結」且目標網域跟目前頁面不同時，改用系統瀏覽器
+        // 開啟，這個 WebView 本身留在原地不動。
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+            if navigationAction.shouldPerformDownload {
+                decisionHandler(.download)
+                return
+            }
+            if navigationAction.navigationType == .linkActivated,
+               let targetURL = navigationAction.request.url,
+               let targetHost = targetURL.host,
+               let currentHost = webView.url?.host,
+               targetHost != currentHost {
+                NSWorkspace.shared.open(targetURL)
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
         }
 
         func webView(
