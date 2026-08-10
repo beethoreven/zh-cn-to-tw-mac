@@ -87,6 +87,10 @@ final class GoogleDesktopSignIn {
             URLQueryItem(name: "nonce", value: Self.randomToken()),
             URLQueryItem(name: "state", value: Self.randomToken()),
             URLQueryItem(name: "prompt", value: "select_account"),
+            // hl（host language）明確指定 Google 這個登入/同意畫面要用
+            // 什麼語言顯示，不受瀏覽器語言設定或使用者 Google 帳號本身的
+            // 語言偏好影響——實測發現不加這個，畫面預設會是英文。
+            URLQueryItem(name: "hl", value: "zh-TW"),
         ]
         NSWorkspace.shared.open(components.url!)
 
