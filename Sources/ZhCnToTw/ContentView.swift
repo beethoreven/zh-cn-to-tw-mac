@@ -19,14 +19,32 @@ struct ContentView: View {
     // WEB_BASE_URL_OVERRIDE 只在開發階段用：指到本機跑的
     // `python3 -m http.server` 網址（例如 http://localhost:8123/），
     // 這樣本機測試時載入的前端才會是還沒 push 上 GitHub Pages 的最新
-    // 程式碼；script.js 本身已經會偵測 hostname 是 localhost/127.0.0.1
-    // 就自動改打本機 backend（127.0.0.1:5001），不需要在這裡額外處理。
+    // 程式碼。
     private let webBaseURL: URL = {
         if let override = ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"],
            let url = URL(string: override) {
             return url
         }
         return URL(string: "https://beethoreven.github.io/zh-cn-to-tw-web/")!
+    }()
+
+    // 本機測前端（WEB_BASE_URL_OVERRIDE 有設）時，Stage 1/2 等 API 呼叫
+    // 預設一律打正式環境的 Render 後端，不用再另外開一個本機
+    // zh-cn-to-tw-backend（app.py）+ 本機 DB 才能測——script.js 已經
+    // 支援網址帶 ?apiBase=<url> 覆寫它原本「hostname 是不是
+    // localhost/127.0.0.1」那套本機/正式判斷（見該檔案開頭的說明）。
+    // 極少數真的需要測「還沒 push 的後端改動」時，設定
+    // WEB_API_BASE_OVERRIDE 環境變數指到本機後端（例如
+    // http://127.0.0.1:5001）即可暫時改回本機。正式環境（載入真正的
+    // GitHub Pages 網址、WEB_BASE_URL_OVERRIDE 沒設）本來就已經打正式
+    // 後端，不需要、也不應該帶這個參數，所以只在 WEB_BASE_URL_OVERRIDE
+    // 有設的時候才給預設值。
+    private let apiBaseOverride: String? = {
+        guard ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"] != nil else {
+            return nil
+        }
+        return ProcessInfo.processInfo.environment["WEB_API_BASE_OVERRIDE"]
+            ?? "https://zh-cn-to-tw-backend.onrender.com"
     }()
 
     var body: some View {
@@ -104,11 +122,15 @@ struct ContentView: View {
 
     private func desktopURL(ocrPort: Int) -> URL {
         var components = URLComponents(url: webBaseURL, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "desktop", value: "1"),
             URLQueryItem(name: "ocrPort", value: String(ocrPort)),
             URLQueryItem(name: "ocrToken", value: ocrManager.token),
         ]
+        if let apiBaseOverride {
+            queryItems.append(URLQueryItem(name: "apiBase", value: apiBaseOverride))
+        }
+        components.queryItems = queryItems
         return components.url!
     }
 }

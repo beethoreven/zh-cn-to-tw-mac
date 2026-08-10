@@ -26,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
+        // WKWebView 的 <script src>/<link> 這類子資源，實測發現不會確實
+        // 跟著 WebView.swift 那邊 URLRequest.cachePolicy 的設定走（那個
+        // 只確實影響最上層文件本身），導致改完 script.js/style.css、
+        // 甚至整個 App 重開好幾次，畫面還是抓到舊版——這裡直接把整個
+        // process 共用的 URLCache 容量歸零，從根本上不讓任何資源被快取，
+        // 確保每次都是真的去抓伺服器上最新的內容。不影響 cookie/
+        // localStorage（登入狀態靠這兩個機制存，跟 URLCache 是分開的）。
+        URLCache.shared = URLCache(memoryCapacity: 0, diskCapacity: 0)
+
         ocrManager.start()
     }
 
