@@ -114,14 +114,24 @@ final class GoogleDesktopSignIn {
             }
 
             if let token = self.extractIDToken(from: buffer) {
-                self.respond(on: connection, success: true)
-                finish(.success(token))
+                // finish() 會呼叫 tearDown()，把這個連線 cancel 掉——一定要
+                // 等 respond() 真的把回應送出去之後才呼叫，不能緊接著同時
+                // 觸發，不然會變成兩邊搶著操作同一個連線：respond() 的
+                // send() 是非同步的，回應內容可能都還沒送達瀏覽器，
+                // tearDown() 就先把連線關了，瀏覽器那頭會看到空的回應
+                // （實測抓到：App 端 token 拿到、登入成功，但瀏覽器分頁
+                // 顯示 ERR_EMPTY_RESPONSE——token 解析在記憶體裡同步完成
+                // 不受影響，受影響的只有回應瀏覽器這一步）。
+                self.respond(on: connection, success: true) {
+                    finish(.success(token))
+                }
                 return
             }
 
             if isComplete || error != nil {
-                self.respond(on: connection, success: false)
-                finish(.failure(.missingToken))
+                self.respond(on: connection, success: false) {
+                    finish(.failure(.missingToken))
+                }
                 return
             }
 
@@ -162,7 +172,7 @@ final class GoogleDesktopSignIn {
         return nil
     }
 
-    private func respond(on connection: NWConnection, success: Bool) {
+    private func respond(on connection: NWConnection, success: Bool, then completion: @escaping () -> Void) {
         let message = success
             ? "登入完成，可以關閉這個分頁，回到「劇本殺繁化助手」繼續使用。"
             : "登入失敗，請回到「劇本殺繁化助手」重試。"
@@ -171,6 +181,7 @@ final class GoogleDesktopSignIn {
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
             connection.cancel()
+            completion()
         })
     }
 
