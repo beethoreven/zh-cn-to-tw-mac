@@ -174,9 +174,16 @@ final class GoogleDesktopSignIn {
 
     private func respond(on connection: NWConnection, success: Bool, then completion: @escaping () -> Void) {
         let message = success
-            ? "登入完成，可以關閉這個分頁，回到「劇本殺繁化助手」繼續使用。"
+            ? "登入完成，這個分頁應該會自動關閉；如果沒有，可以自行關閉並回到「劇本殺繁化助手」。"
             : "登入失敗，請回到「劇本殺繁化助手」重試。"
-        let body = "<html><body style=\"font-family:-apple-system,sans-serif;text-align:center;padding-top:80px;\">\(message)</body></html>"
+        // window.close() 只有在分頁是被 JS（window.open()）開的情況下才保證
+        // 有效——這個分頁是系統瀏覽器直接開的，不一定會生效（不同瀏覽器
+        // 行為不同），加上去無害，能關就關，不能關就留著訊息讓使用者自己
+        // 關掉。真正可靠、不受瀏覽器限制影響的是下面 App 端主動把自己切回
+        // 前景（見 start(completion:) 呼叫端），不管這個分頁關不關得掉，
+        // 使用者都不用自己手動切換視窗。
+        let script = success ? "<script>window.close();</script>" : ""
+        let body = "<html><body style=\"font-family:-apple-system,sans-serif;text-align:center;padding-top:80px;\">\(message)\(script)</body></html>"
         let status = success ? "200 OK" : "400 Bad Request"
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in

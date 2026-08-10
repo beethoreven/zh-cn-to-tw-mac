@@ -127,6 +127,12 @@ struct WebView: NSViewRepresentable {
                     // 後續流程完全不用另外重寫一份。
                     let escaped = idToken.replacingOccurrences(of: "'", with: "\\'")
                     webView.evaluateJavaScript("handleCredentialResponse({credential: '\(escaped)'})")
+                    // 登入是在系統瀏覽器完成的，使用者這時候人在瀏覽器那邊；
+                    // window.close() 不保證能關掉那個分頁（瀏覽器對非 JS
+                    // 開的分頁通常會擋），所以主動把這個 App 切回前景，
+                    // 不管瀏覽器分頁關不關得掉，使用者都不用自己手動切換
+                    // 回來。
+                    NSApp.activate(ignoringOtherApps: true)
                 case .failure(let error):
                     print("[desktop-signin] 失敗：\(error)")
                     webView.evaluateJavaScript(
