@@ -309,6 +309,11 @@ struct WebView: NSViewRepresentable {
             download.delegate = self
         }
 
+        // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發
+        // 時才知道要在 toast 裡告訴使用者存到哪裡了——WKDownload 本身沒有
+        // 內建「記得自己存去哪」這件事，完成 callback 也不會帶路徑回來。
+        private var downloadDestinations: [ObjectIdentifier: URL] = [:]
+
         func download(
             _ download: WKDownload,
             decideDestinationUsing response: URLResponse,
@@ -323,15 +328,22 @@ struct WebView: NSViewRepresentable {
                 completionHandler(nil)
                 return
             }
-            completionHandler(Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename))
+            let destination = Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
+            downloadDestinations[ObjectIdentifier(download)] = destination
+            completionHandler(destination)
         }
 
         func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            downloadDestinations[ObjectIdentifier(download)] = nil
             print("[webview-download] 失敗：\(error)")
+            let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
+            download.webView?.evaluateJavaScript("showToast('\(message)', 'error')")
         }
 
         func downloadDidFinish(_ download: WKDownload) {
-            print("[webview-download] 完成")
+            guard let destination = downloadDestinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
+            let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
+            download.webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
         }
 
         private static func uniqueDestination(in directory: URL, filename: String) -> URL {
