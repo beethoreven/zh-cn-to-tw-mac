@@ -45,6 +45,10 @@ struct WebView: NSViewRepresentable {
         )
         contentController.addUserScript(userScript)
         contentController.add(context.coordinator, name: "consoleLog")
+        // 桌面版登入改用系統瀏覽器（見 GoogleDesktopSignIn.swift 的說明），
+        // 網頁那邊偵測到 desktop=1 時會呼叫這個 channel 請殼開始登入流程，
+        // 不再使用 Google Identity Services 在內嵌 WebView 裡的彈出視窗。
+        contentController.add(context.coordinator, name: "desktopSignIn")
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -95,10 +99,41 @@ struct WebView: NSViewRepresentable {
             webView.load(request)
         }
 
+        private var activeSignIn: GoogleDesktopSignIn?
+
         func userContentController(
             _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
         ) {
-            print("[webview-console] \(message.body)")
+            switch message.name {
+            case "desktopSignIn":
+                startDesktopSignIn(for: message.webView)
+            default:
+                print("[webview-console] \(message.body)")
+            }
+        }
+
+        private func startDesktopSignIn(for webView: WKWebView?) {
+            guard let webView else { return }
+            let signIn = GoogleDesktopSignIn()
+            activeSignIn = signIn
+            signIn.start { [weak self] result in
+                self?.activeSignIn = nil
+                switch result {
+                case .success(let idToken):
+                    // 網頁那邊原本 Google Identity Services 登入成功時就是
+                    // 呼叫這個函式（見 script.js 的 handleCredentialResponse）
+                    // ——直接沿用同一套邏輯（存 token、驗證、更新 UI），系統
+                    // 瀏覽器登入完成後只是換一種方式把 token 交回網頁，
+                    // 後續流程完全不用另外重寫一份。
+                    let escaped = idToken.replacingOccurrences(of: "'", with: "\\'")
+                    webView.evaluateJavaScript("handleCredentialResponse({credential: '\(escaped)'})")
+                case .failure(let error):
+                    print("[desktop-signin] 失敗：\(error)")
+                    webView.evaluateJavaScript(
+                        "window.alert && window.alert('登入失敗，請重試（\(String(describing: error))）')"
+                    )
+                }
+            }
         }
 
         func webView(
