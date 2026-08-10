@@ -61,6 +61,14 @@ struct ContentView: View {
                     ProgressView()
                     Text("本機 OCR 服務啟動中…")
                         .foregroundStyle(.secondary)
+                    // ocrManager 內部有 20 秒逾時 + 最多 3 次自動重試（見
+                    // OCRServiceManager.swift），這裡的按鈕是自動重試都
+                    // 用完之後，給使用者一個手動再試一次的辦法，不用逼
+                    // 使用者重開整個 App。
+                    if ocrManager.lastError != nil {
+                        Button("重試") { ocrManager.retryStart() }
+                            .padding(.top, 4)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

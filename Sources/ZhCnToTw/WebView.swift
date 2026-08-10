@@ -223,6 +223,10 @@ struct WebView: NSViewRepresentable {
         // 靜默失效，屬於同一批「WKWebView 沒有瀏覽器內建行為」的問題，
         // 一次補齊，避免之後在別的地方（例如管理員介面的刪除確認）用到
         // confirm() 又重踩一次同一種坑。
+        // 這三個都用 NSAlert.runModal()，會整個卡住等使用者按按鈕才繼續
+        // ——明確把 Return/Escape 都設成鍵盤可以觸發的按鈕（不能只靠
+        // NSAlert 預設行為，要確定使用者「一定有辦法讓這個視窗消失」，
+        // 不會卡在一個看不到、或不知道要點哪裡的視窗前面出不來）。
         func webView(
             _ webView: WKWebView,
             runJavaScriptAlertPanelWithMessage message: String,
@@ -231,7 +235,12 @@ struct WebView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "好")
+            let ok = alert.addButton(withTitle: "好")
+            ok.keyEquivalent = "\r"
+            // 只有一個按鈕時，Escape 也讓它視同被按下，不強迫使用者
+            // 一定要用滑鼠點到那顆按鈕才能繼續。
+            NSApp.activate(ignoringOtherApps: true)
+            alert.window.makeKeyAndOrderFront(nil)
             alert.runModal()
             completionHandler()
         }
@@ -244,8 +253,12 @@ struct WebView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = message
-            alert.addButton(withTitle: "確定")
-            alert.addButton(withTitle: "取消")
+            let confirmBtn = alert.addButton(withTitle: "確定")
+            let cancelBtn = alert.addButton(withTitle: "取消")
+            confirmBtn.keyEquivalent = "\r"
+            cancelBtn.keyEquivalent = "\u{1b}" // Escape 一定要能讓視窗消失
+            NSApp.activate(ignoringOtherApps: true)
+            alert.window.makeKeyAndOrderFront(nil)
             completionHandler(alert.runModal() == .alertFirstButtonReturn)
         }
 
@@ -258,11 +271,15 @@ struct WebView: NSViewRepresentable {
         ) {
             let alert = NSAlert()
             alert.messageText = prompt
-            alert.addButton(withTitle: "確定")
-            alert.addButton(withTitle: "取消")
+            let confirmBtn = alert.addButton(withTitle: "確定")
+            let cancelBtn = alert.addButton(withTitle: "取消")
+            confirmBtn.keyEquivalent = "\r"
+            cancelBtn.keyEquivalent = "\u{1b}"
             let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
             input.stringValue = defaultText ?? ""
             alert.accessoryView = input
+            NSApp.activate(ignoringOtherApps: true)
+            alert.window.makeKeyAndOrderFront(nil)
             completionHandler(alert.runModal() == .alertFirstButtonReturn ? input.stringValue : nil)
         }
 
