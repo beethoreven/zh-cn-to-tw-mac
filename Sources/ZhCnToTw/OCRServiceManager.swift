@@ -39,23 +39,36 @@ final class OCRServiceManager: ObservableObject {
         process.standardOutput = stdout
         self.stdoutPipe = stdout
 
+        // readabilityHandler/terminationHandler 都是非同步 callback，
+        // 可能延遲觸發——如果這個 process 已經死掉、health check 已經
+        // 重新拉起一個新的 process，舊 process 這兩個 callback 才姍姍
+        // 來遲，絕對不能無條件覆寫 self.port/self.process，那樣會把
+        // 新 process 已經正確設好、正常運作中的狀態蓋掉，導致畫面卡在
+        // 「本機 OCR 服務啟動中」但實際上新的服務其實活得好好的（實測
+        // 抓到這個情境：ps 看到 process 活著、curl /health 也正常回應，
+        // 但 App 畫面沒有反映出來）。用 identity 比對（=== process）
+        // 確認這個 callback 還是「目前這一個」process 才生效。
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             for line in text.split(separator: "\n") {
                 let prefix = "OCR_SERVICE_PORT="
                 if line.hasPrefix(prefix), let value = Int(line.dropFirst(prefix.count)) {
-                    DispatchQueue.main.async { self?.port = value }
+                    DispatchQueue.main.async {
+                        guard let self, self.process === process else { return }
+                        self.port = value
+                    }
                 }
             }
         }
 
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
-                self?.port = nil
-                self?.process = nil
+                guard let self, self.process === process else { return }
+                self.port = nil
+                self.process = nil
                 if proc.terminationStatus != 0 {
-                    self?.lastError = "ocr-service 已結束（exit code \(proc.terminationStatus)）"
+                    self.lastError = "ocr-service 已結束（exit code \(proc.terminationStatus)）"
                 }
             }
         }

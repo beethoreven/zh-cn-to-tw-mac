@@ -3,6 +3,13 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var ocrManager: OCRServiceManager
     @State private var reloadToken = UUID()
+    // 一旦拿到第一次成功的 port 就固定住，之後 ocrManager.port 若因為
+    // ocr-service 短暫掛掉、重啟（甚至換了新 port）而變動，WebView 都
+    // 不會因此被砍掉重建——不然使用者畫面上所有還沒存的東西（表單填到
+    // 一半、Stage 1/2 還沒下載的結果）會直接消失。ocr-service 真的斷線
+    // 的話，使用者點「上傳」之類需要它的操作會看到 API 失敗的錯誤，這是
+    // 可以接受的（中斷那個操作沒關係），但不能整個畫面被拔掉重來。
+    @State private var stableOcrPort: Int?
 
     // 桌面殼載入的是目前上線的 GitHub Pages 網址（不是內嵌網頁資源），前端
     // 改版不需要重新發版整個桌面 App——見 desktop_app_plan 設計文件。如果
@@ -25,7 +32,16 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button(action: { reloadToken = UUID() }) {
+                Button(action: {
+                    // 手動重新整理時，順便換成目前最新的 port（例如
+                    // ocr-service 中途重啟換了新 port）——這是使用者
+                    // 自己主動選擇要重新載入，接受這次會是全新的頁面
+                    // 狀態，跟「服務自己掛掉時不該自動砍畫面」是兩回事。
+                    if let currentPort = ocrManager.port {
+                        stableOcrPort = currentPort
+                    }
+                    reloadToken = UUID()
+                }) {
                     Image(systemName: "arrow.clockwise")
                 }
                 .help("重新整理")
@@ -38,7 +54,7 @@ struct ContentView: View {
             }
             .padding(8)
 
-            if let port = ocrManager.port {
+            if let port = stableOcrPort {
                 WebView(url: desktopURL(ocrPort: port), reloadToken: reloadToken)
             } else {
                 VStack(spacing: 8) {
@@ -52,6 +68,14 @@ struct ContentView: View {
         // 900x700 放大 20%（原本預設大小偏小）。用 idealWidth/idealHeight
         // 讓這組數字也是視窗第一次開啟時的大小，不是只當作最小值。
         .frame(minWidth: 1080, idealWidth: 1080, minHeight: 840, idealHeight: 840)
+        .onChange(of: ocrManager.port) { newPort in
+            // 只在「第一次」拿到 port 時採用，之後 ocrManager.port 的
+            // 任何變動（服務重啟、暫時斷線變 nil）都不會再動到已經固定
+            // 住的 stableOcrPort，見上面 stableOcrPort 的宣告說明。
+            if stableOcrPort == nil, let newPort {
+                stableOcrPort = newPort
+            }
+        }
     }
 
     private func desktopURL(ocrPort: Int) -> URL {
