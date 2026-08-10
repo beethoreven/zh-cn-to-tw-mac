@@ -63,6 +63,7 @@ struct WebView: NSViewRepresentable {
         }
 
         webView.uiDelegate = context.coordinator
+        webView.navigationDelegate = context.coordinator
 
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
         return webView
@@ -72,7 +73,7 @@ struct WebView: NSViewRepresentable {
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
         private var lastURL: URL?
         private var lastReloadToken: UUID?
 
@@ -212,6 +213,67 @@ struct WebView: NSViewRepresentable {
             panel.begin { response in
                 completionHandler(response == .OK ? panel.urls : nil)
             }
+        }
+
+        // 下載按鈕（例如「下載校對後成果」）背後是 fetch 拿到 blob 再用
+        // <a download href="blob:..."> 模擬點擊觸發下載，這是一般瀏覽器
+        // 支援的標準做法，但 WKWebView 預設不知道怎麼處理這種下載型的
+        // 導覽，點了完全沒反應——要靠 shouldPerformDownload 偵測到這類
+        // 導覽，明確交給 WKDownload 處理，才會真的觸發下載（跟今晚檔案
+        // 選擇按鈕、登入彈出視窗是同一種「WKWebView 沒有瀏覽器內建行為，
+        // 要自己實作對應 delegate 方法」的問題）。
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            navigationAction: WKNavigationAction,
+            didBecome download: WKDownload
+        ) {
+            download.delegate = self
+        }
+
+        func download(
+            _ download: WKDownload,
+            decideDestinationUsing response: URLResponse,
+            suggestedFilename: String,
+            completionHandler: @escaping (URL?) -> Void
+        ) {
+            // 直接存到使用者的「下載項目」資料夾，跟一般瀏覽器預設行為
+            // 一致，不特別跳存檔視窗；檔名如果已存在就加上流水號，避免
+            // 覆蓋掉使用者之前下載的同名檔案。
+            let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            guard let downloadsDir else {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename))
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            print("[webview-download] 失敗：\(error)")
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            print("[webview-download] 完成")
+        }
+
+        private static func uniqueDestination(in directory: URL, filename: String) -> URL {
+            let ext = (filename as NSString).pathExtension
+            let base = (filename as NSString).deletingPathExtension
+            var candidate = directory.appendingPathComponent(filename)
+            var suffix = 1
+            while FileManager.default.fileExists(atPath: candidate.path) {
+                let numbered = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+                candidate = directory.appendingPathComponent(numbered)
+                suffix += 1
+            }
+            return candidate
         }
     }
 }
