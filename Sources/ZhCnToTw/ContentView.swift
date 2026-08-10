@@ -76,6 +76,22 @@ struct ContentView: View {
                 stableOcrPort = newPort
             }
         }
+        .onAppear {
+            // onChange 只會在「這個 View 已經至少 render 過一次之後、值
+            // 才真的改變」才會觸發——如果 ocr-service 啟動得夠快，
+            // applicationDidFinishLaunching 呼叫 ocrManager.start() 到
+            // 真正報回 port，可能比 SwiftUI 第一次 render 這個畫面還快，
+            // 這種情況下 port 從一開始就已經是「有值」的狀態，onChange
+            // 完全不會觸發（它只認「有沒有變」，不認「現在是什麼值」），
+            // stableOcrPort 就會永遠卡在 nil，畫面卡死在讀取畫面——即使
+            // ocr-service 本身其實完全正常（實測抓到：process 活著、
+            // port 有在監聽、curl /health 也正常回應，問題純粹出在這裡
+            // 沒有把已經存在的值撈出來）。onAppear 補上這個「一開始就
+            // 已經有值」的情況。
+            if stableOcrPort == nil, let currentPort = ocrManager.port {
+                stableOcrPort = currentPort
+            }
+        }
     }
 
     private func desktopURL(ocrPort: Int) -> URL {
