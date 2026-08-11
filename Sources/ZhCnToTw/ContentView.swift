@@ -7,8 +7,14 @@ struct ContentView: View {
     // 一旦拿到第一次成功的 port 就固定住，之後 ocrManager.port 若因為
     // 服務短暫掛掉、重啟（甚至換了新 port）而變動，WebView 都不會因此被砍掉
     // 重建——不然使用者畫面上所有還沒存的東西（表單填到一半、Stage 1/2 還沒
-    // 下載的結果）會直接消失。服務真的斷線的話，使用者的操作會看到 API 失敗
-    // 的錯誤，這是可以接受的（中斷那個操作沒關係），但不能整個畫面被拔掉重來。
+    // 下載的結果）會直接消失。
+    //
+    // 注意這個值只決定「網址上那個查詢參數」，不是網頁實際會去打的 port：
+    // 服務重啟換 port 後，最新的值是透過 WebView 的 livePort 用 JS 推進
+    // 已經載入好的頁面（見 WebView.swift 的 updateLivePort）。兩者分開才能
+    // 同時做到「不重新載入頁面」跟「服務重啟後還能繼續用」——早期只有這個
+    // 固定值、沒有 livePort，服務閒置重啟後網頁就會一直打舊 port，出現
+    // 「無法連接伺服器」而且只有按重新整理才會好（實測撞過）。
     @State private var stableOcrPort: Int?
 
     // 網頁前端整份包在 .app 裡（Resources/web/），用固定的 file:// 路徑
@@ -58,10 +64,19 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: {
-                    // 手動重新整理時，順便換成目前最新的 OCR port（例如
-                    // ocr-service 中途重啟換了新 port）——這是使用者自己
-                    // 主動選擇要重新載入，接受這次會是全新的頁面狀態，
-                    // 跟「服務自己掛掉時不該自動砍畫面」是兩回事。
+                    // 重新整理時一併確保本機 OCR 服務是活的。使用者會按這個
+                    // 按鈕，通常就是因為覺得「怪怪的、想重來一次」，而最常見
+                    // 的「怪怪的」就是服務閒置自我關閉了——如果這裡不順手把它
+                    // 拉起來，光是重新載入頁面完全救不了：服務死著的時候
+                    // ocrManager.port 是 nil，下面那個 if let 不會成立，網址上
+                    // 還是掛著已經沒人在聽的舊 port，使用者重新整理完馬上去用，
+                    // 一樣是「無法連接伺服器」（實測撞過這個情境）。
+                    // 健康檢查每 30 秒也會做同樣的事，這裡是讓使用者不必等。
+                    ocrManager.ensureRunning()
+                    // 順便把網址上的 port 也換成目前最新的。正常情況下不需要
+                    // 靠這個（服務重啟換 port 會自動用 JS 推進頁面，見
+                    // stableOcrPort 的說明），這裡只是讓重新載入後的網址跟
+                    // 現況一致，不要留一個早就過期的值在那裡誤導人。
                     if let currentPort = ocrManager.port {
                         stableOcrPort = currentPort
                     }
@@ -80,7 +95,15 @@ struct ContentView: View {
             .padding(8)
 
             if let ocrPort = stableOcrPort, let webURL {
-                WebView(url: desktopURL(base: webURL, ocrPort: ocrPort), reloadToken: reloadToken)
+                // url 帶的是 stableOcrPort（第一次載入時的值，之後不再變動，
+                // 免得每次服務重啟都害頁面重新載入、清掉工作狀態）；
+                // livePort 帶的是「現在最新」的值，WebView 會用 JS 直接推進
+                // 已載入的頁面裡，不重新載入也能繼續打得到本機服務。
+                WebView(
+                    url: desktopURL(base: webURL, ocrPort: ocrPort),
+                    reloadToken: reloadToken,
+                    livePort: ocrManager.port
+                )
             } else {
                 VStack(spacing: 8) {
                     ProgressView()

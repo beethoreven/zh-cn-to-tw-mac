@@ -61,7 +61,18 @@ final class OCRServiceManager: ObservableObject {
         // 確認這個 callback 還是「目前這一個」process 才生效。
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            // 讀到空資料代表 pipe 的寫入端已經關閉（ocr-service 結束了）。
+            // 這時候一定要主動把 handler 解掉：不解的話 GCD 會一直認為這個
+            // fd「隨時可讀」，無止盡地重複呼叫這個 closure，一個死掉的服務
+            // 就足以讓 App 空轉燒掉一整顆 CPU 核心。而且服務每重啟一次就會
+            // 多疊一個這樣的空轉 handler，時間拉長會累積成好幾倍。
+            // （實測：服務一死，App 的 CPU 從 0% 直接衝到 96% 且不會回落；
+            // 一個開了五小時、中間被閒置重啟過幾次的 App 量到 283%。）
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             for line in text.split(separator: "\n") {
                 let prefix = "OCR_SERVICE_PORT="
                 if line.hasPrefix(prefix), let value = Int(line.dropFirst(prefix.count)) {
@@ -124,13 +135,21 @@ final class OCRServiceManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupTimeoutSeconds, execute: workItem)
     }
 
-    /// 每次真的要用（送 PDF 去 OCR）之前呼叫一次：ocr-service 閒置超過設定
-    /// 時間會自我關閉以釋放記憶體，這裡確保下一次要用時無感重新拉起，
-    /// 使用者不需要重開整個 App。
+    /// 確保服務是活的：ocr-service 閒置超過設定時間會自我關閉以釋放記憶體，
+    /// 這裡負責無感重新拉起，使用者不需要重開整個 App。每 30 秒的健康檢查
+    /// 會呼叫，使用者按重新整理時也會呼叫（見 ContentView）。
     func ensureRunning() {
-        if process == nil || process?.isRunning != true {
-            start()
+        guard process == nil || process?.isRunning != true else { return }
+        // process 還在但已經不是 running，代表它死了、只是 terminationHandler
+        // 還沒跑到（那個 callback 是非同步派回主執行緒的，中間有空窗）。這裡
+        // 一定要先把 process 清成 nil：start() 開頭有 `guard process == nil`，
+        // 不清的話這個 guard 會直接擋掉，整個 ensureRunning 變成靜默的
+        // 什麼都沒做——使用者按了重新整理卻毫無反應，而且完全看不出原因。
+        if process != nil {
+            process = nil
+            port = nil
         }
+        start()
     }
 
     /// 讓使用者可以手動重新觸發啟動流程（例如按重新整理），不受

@@ -6,6 +6,12 @@ import WebKit
 struct WebView: NSViewRepresentable {
     let url: URL
     let reloadToken: UUID
+    /// ocr-service 目前實際在聽的 port。跟 url 裡那個查詢參數不一樣：url
+    /// 的那個是頁面載入當下的值、之後不會再變（改它就等於要重新載入整個
+    /// 頁面，會清掉使用者做到一半的狀態），這個則是「現在最新」的值。
+    /// 服務閒置自我關閉、被健康檢查重新拉起時會拿到新 port，這裡把新值
+    /// 推進頁面，讓網頁不用重新載入也能繼續打得到本機服務。
+    let livePort: Int?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -65,17 +71,25 @@ struct WebView: NSViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.navigationDelegate = context.coordinator
 
+        context.coordinator.livePort = livePort
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
+        context.coordinator.updateLivePort(livePort, in: webView)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
         private var lastURL: URL?
         private var lastReloadToken: UUID?
+
+        /// 目前最新的 ocr-service port，跟已經推進頁面的那個值分開記：
+        /// 頁面重新載入（或還在載入中）時 window 上的變數會消失，所以
+        /// didFinish 之後要能重推一次，這裡必須留著最新值。
+        var livePort: Int?
+        private var pushedPort: Int?
 
         // Google 登入用 window.open() 開一個彈出視窗跑 OAuth 流程，但
         // WKWebView 預設完全不處理 window.open()——瀏覽器都有內建的彈出
@@ -85,10 +99,31 @@ struct WebView: NSViewRepresentable {
         // 這裡持有已開啟的彈出視窗，避免視窗物件被提早釋放掉。
         private var popupWindows: [NSWindow] = []
 
+        /// 把最新的 port 寫進頁面的 window.__OCR_PORT__（見 zh-cn-to-tw-web
+        /// 的 script.js 的 desktopOcrBase()）。刻意不重新載入頁面——服務自己
+        /// 閒置關閉再被拉起是背景行為，不該把使用者做到一半的工作狀態清掉。
+        func updateLivePort(_ port: Int?, in webView: WKWebView) {
+            livePort = port
+            // 頁面還在載入中就先不推：這時候推進去的是舊 document 的 window，
+            // 新頁面載好後會被整個換掉。didFinish 會再呼叫一次補上。
+            guard let port, port != pushedPort, !webView.isLoading else { return }
+            pushedPort = port
+            webView.evaluateJavaScript("window.__OCR_PORT__ = \(port);") { _, error in
+                if let error {
+                    print("[webview-ocr-port] 寫入失敗（port \(port)）：\(error)")
+                } else {
+                    print("[webview-ocr-port] 已推送 port \(port) 進頁面")
+                }
+            }
+        }
+
         func load(url: URL, reloadToken: UUID, into webView: WKWebView) {
             guard url != lastURL || reloadToken != lastReloadToken else { return }
             lastURL = url
             lastReloadToken = reloadToken
+            // 要載入新頁面了，舊 document 上的 window.__OCR_PORT__ 會跟著消失，
+            // 這裡把「已推送」狀態歸零，didFinish 才會重新推一次。
+            pushedPort = nil
 
             if url.isFileURL {
                 // 網頁前端現在是包在 .app 裡直接用 file:// 載入（見
@@ -365,6 +400,9 @@ struct WebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             print("[webview-nav] 載入完成：\(webView.url?.absoluteString ?? "(nil)")")
+            // 頁面（重新）載好了，window 是全新的，把目前最新的 port 補推
+            // 一次——updateNSView 可能在載入途中就來過、當時被跳過了。
+            updateLivePort(livePort, in: webView)
         }
 
         // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發
