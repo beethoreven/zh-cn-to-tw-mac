@@ -16,6 +16,11 @@ APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"
 # onedir 產出；可用環境變數覆蓋，方便之後在別台機器上打包。
 OCR_SERVICE_DIST_DIR="${OCR_SERVICE_DIST_DIR:-$REPO_ROOT/../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service}"
 
+# 本機 backend（同時供應網頁介面與 API，見 zh-cn-to-tw-backend）。
+BACKEND_DIST_DIR="${BACKEND_DIST_DIR:-$REPO_ROOT/../zh-cn-to-tw-backend/dist/zh-cn-to-tw-backend}"
+# 網頁前端原始檔，會被放到 backend 執行檔旁邊的 web/ 由它自己供應。
+WEB_SRC_DIR="${WEB_SRC_DIR:-$REPO_ROOT/../zh-cn-to-tw-web}"
+
 echo "==> swift build ($CONFIG)"
 swift build --package-path "$REPO_ROOT" -c "$CONFIG"
 
@@ -36,6 +41,38 @@ if [ -d "$OCR_SERVICE_DIST_DIR" ]; then
 else
   echo "    找不到 $OCR_SERVICE_DIST_DIR，這次不內嵌 ocr-service"
   echo "    （執行時可用 OCR_SERVICE_DEV_PATH 環境變數指到本機打包好的執行檔）"
+fi
+
+if [ -d "$BACKEND_DIST_DIR" ]; then
+  mkdir -p "$APP_BUNDLE/Contents/Resources/backend"
+  cp -R "$BACKEND_DIST_DIR"/. "$APP_BUNDLE/Contents/Resources/backend/"
+  echo "    已內嵌 backend：$BACKEND_DIST_DIR"
+
+  # 網頁前端放在 backend 執行檔旁邊的 web/，backend 啟動時會自動找到這裡
+  # 並開始供應（見該 repo configs/config.py 的 WEB_STATIC_DIR）。
+  rm -rf "$APP_BUNDLE/Contents/Resources/backend/web"
+  if [ -d "$WEB_SRC_DIR" ]; then
+    mkdir -p "$APP_BUNDLE/Contents/Resources/backend/web"
+    # 只複製網頁真正需要的檔案，不要把整個 repo（.git、README 之類）塞進去
+    for f in index.html script.js style.css favicon.png teacher-notice.txt; do
+      [ -f "$WEB_SRC_DIR/$f" ] && cp "$WEB_SRC_DIR/$f" "$APP_BUNDLE/Contents/Resources/backend/web/$f"
+    done
+    echo "    已內嵌網頁前端：$WEB_SRC_DIR"
+  else
+    echo "    找不到 $WEB_SRC_DIR，這次不內嵌網頁前端（App 會開不起來）"
+  fi
+
+  # 刻意「不」把 .env 放進 bundle：資料庫連線字串與 LLM API 金鑰只要進到
+  # 使用者拿得到的檔案裡，就一定能被取出來（程式執行時必須能解密才能用，
+  # 加密或混淆只是提高門檻，不是防護）。這支本機 backend 只負責供應網頁
+  # 靜態檔案，完全不需要任何憑證；所有需要憑證的操作（Google 登入驗證、
+  # Neon 資料庫、LLM 呼叫）都由 Render 上的同一份程式處理，桌面端只拿一個
+  # 有範圍限制、可撤銷的 session token。這樣打包出來的 .app 可以直接發給
+  # 別人，裡面不含任何值錢的東西。
+  rm -f "$APP_BUNDLE/Contents/Resources/backend/.env"
+else
+  echo "    找不到 $BACKEND_DIST_DIR，這次不內嵌 backend"
+  echo "    （執行時可用 BACKEND_SERVICE_DEV_PATH 環境變數指到本機打包好的執行檔）"
 fi
 
 echo "==> 完成：$APP_BUNDLE"

@@ -2,61 +2,45 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var ocrManager: OCRServiceManager
+    @EnvironmentObject var backendManager: BackendServiceManager
     @State private var reloadToken = UUID()
-    // 一旦拿到第一次成功的 port 就固定住，之後 ocrManager.port 若因為
-    // ocr-service 短暫掛掉、重啟（甚至換了新 port）而變動，WebView 都
-    // 不會因此被砍掉重建——不然使用者畫面上所有還沒存的東西（表單填到
-    // 一半、Stage 1/2 還沒下載的結果）會直接消失。ocr-service 真的斷線
-    // 的話，使用者點「上傳」之類需要它的操作會看到 API 失敗的錯誤，這是
-    // 可以接受的（中斷那個操作沒關係），但不能整個畫面被拔掉重來。
-    @State private var stableOcrPort: Int?
 
-    // 桌面殼載入的是目前上線的 GitHub Pages 網址（不是內嵌網頁資源），前端
-    // 改版不需要重新發版整個桌面 App——見 desktop_app_plan 設計文件。如果
-    // 之後網站關站、改成殼直接內嵌網頁資源，這裡要換成本機 bundle 裡的
-    // file:// 路徑。
+    // 一旦拿到第一次成功的 port 就固定住，之後這兩個 manager 的 port 若因為
+    // 服務短暫掛掉、重啟（甚至換了新 port）而變動，WebView 都不會因此被砍掉
+    // 重建——不然使用者畫面上所有還沒存的東西（表單填到一半、Stage 1/2 還沒
+    // 下載的結果）會直接消失。服務真的斷線的話，使用者的操作會看到 API 失敗
+    // 的錯誤，這是可以接受的（中斷那個操作沒關係），但不能整個畫面被拔掉重來。
+    @State private var stableOcrPort: Int?
+    @State private var stableBackendPort: Int?
+
+    // 網頁介面本身現在也是由本機 backend 供應的（整份前端包在 .app 裡，
+    // 見 zh-cn-to-tw-backend 的 WEB_STATIC_DIR），不再從 GitHub Pages 線上
+    // 抓——網頁跟 API 因此是同一個 origin，前端用相對路徑呼叫 API 即可。
     //
-    // WEB_BASE_URL_OVERRIDE 只在開發階段用：指到本機跑的
-    // `python3 -m http.server` 網址（例如 http://localhost:8123/），
-    // 這樣本機測試時載入的前端才會是還沒 push 上 GitHub Pages 的最新
-    // 程式碼。
-    private let webBaseURL: URL = {
+    // WEB_BASE_URL_OVERRIDE 只在開發階段用：指到本機另外跑的網頁伺服器，
+    // 方便測試還沒放進 bundle 的前端改動。
+    private var webBaseURL: URL? {
         if let override = ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"],
            let url = URL(string: override) {
             return url
         }
-        return URL(string: "https://beethoreven.github.io/zh-cn-to-tw-web/")!
-    }()
-
-    // 本機測前端（WEB_BASE_URL_OVERRIDE 有設）時，Stage 1/2 等 API 呼叫
-    // 預設一律打正式環境的 Render 後端，不用再另外開一個本機
-    // zh-cn-to-tw-backend（app.py）+ 本機 DB 才能測——script.js 已經
-    // 支援網址帶 ?apiBase=<url> 覆寫它原本「hostname 是不是
-    // localhost/127.0.0.1」那套本機/正式判斷（見該檔案開頭的說明）。
-    // 極少數真的需要測「還沒 push 的後端改動」時，設定
-    // WEB_API_BASE_OVERRIDE 環境變數指到本機後端（例如
-    // http://127.0.0.1:5001）即可暫時改回本機。正式環境（載入真正的
-    // GitHub Pages 網址、WEB_BASE_URL_OVERRIDE 沒設）本來就已經打正式
-    // 後端，不需要、也不應該帶這個參數，所以只在 WEB_BASE_URL_OVERRIDE
-    // 有設的時候才給預設值。
-    private let apiBaseOverride: String? = {
-        guard ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"] != nil else {
-            return nil
-        }
-        return ProcessInfo.processInfo.environment["WEB_API_BASE_OVERRIDE"]
-            ?? "https://zh-cn-to-tw-backend.onrender.com"
-    }()
+        guard let backendPort = stableBackendPort else { return nil }
+        return URL(string: "http://127.0.0.1:\(backendPort)/")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: {
-                    // 手動重新整理時，順便換成目前最新的 port（例如
-                    // ocr-service 中途重啟換了新 port）——這是使用者
-                    // 自己主動選擇要重新載入，接受這次會是全新的頁面
-                    // 狀態，跟「服務自己掛掉時不該自動砍畫面」是兩回事。
+                    // 手動重新整理時，順便換成目前最新的 port（例如某個服務
+                    // 中途重啟換了新 port）——這是使用者自己主動選擇要重新
+                    // 載入，接受這次會是全新的頁面狀態，跟「服務自己掛掉時
+                    // 不該自動砍畫面」是兩回事。
                     if let currentPort = ocrManager.port {
                         stableOcrPort = currentPort
+                    }
+                    if let currentPort = backendManager.port {
+                        stableBackendPort = currentPort
                     }
                     reloadToken = UUID()
                 }) {
@@ -64,7 +48,7 @@ struct ContentView: View {
                 }
                 .help("重新整理")
                 Spacer()
-                if let error = ocrManager.lastError {
+                if let error = backendManager.lastError ?? ocrManager.lastError {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -72,20 +56,22 @@ struct ContentView: View {
             }
             .padding(8)
 
-            if let port = stableOcrPort {
-                WebView(url: desktopURL(ocrPort: port), reloadToken: reloadToken)
+            if let ocrPort = stableOcrPort, let baseURL = webBaseURL {
+                WebView(url: desktopURL(base: baseURL, ocrPort: ocrPort), reloadToken: reloadToken)
             } else {
                 VStack(spacing: 8) {
                     ProgressView()
-                    Text("本機 OCR 服務啟動中…")
+                    Text(loadingMessage)
                         .foregroundStyle(.secondary)
-                    // ocrManager 內部有 20 秒逾時 + 最多 3 次自動重試（見
-                    // OCRServiceManager.swift），這裡的按鈕是自動重試都
-                    // 用完之後，給使用者一個手動再試一次的辦法，不用逼
+                    // 兩個 manager 內部都有逾時 + 自動重試，這裡的按鈕是自動
+                    // 重試都用完之後，給使用者一個手動再試一次的辦法，不用逼
                     // 使用者重開整個 App。
-                    if ocrManager.lastError != nil {
-                        Button("重試") { ocrManager.retryStart() }
-                            .padding(.top, 4)
+                    if backendManager.lastError != nil || ocrManager.lastError != nil {
+                        Button("重試") {
+                            if backendManager.lastError != nil { backendManager.retryStart() }
+                            if ocrManager.lastError != nil { ocrManager.retryStart() }
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -95,42 +81,74 @@ struct ContentView: View {
         // 讓這組數字也是視窗第一次開啟時的大小，不是只當作最小值。
         .frame(minWidth: 1080, idealWidth: 1080, minHeight: 840, idealHeight: 840)
         .onChange(of: ocrManager.port) { newPort in
-            // 只在「第一次」拿到 port 時採用，之後 ocrManager.port 的
-            // 任何變動（服務重啟、暫時斷線變 nil）都不會再動到已經固定
-            // 住的 stableOcrPort，見上面 stableOcrPort 的宣告說明。
             if stableOcrPort == nil, let newPort {
                 stableOcrPort = newPort
             }
         }
+        .onChange(of: backendManager.port) { newPort in
+            if stableBackendPort == nil, let newPort {
+                stableBackendPort = newPort
+            }
+        }
         .onAppear {
-            // onChange 只會在「這個 View 已經至少 render 過一次之後、值
-            // 才真的改變」才會觸發——如果 ocr-service 啟動得夠快，
-            // applicationDidFinishLaunching 呼叫 ocrManager.start() 到
-            // 真正報回 port，可能比 SwiftUI 第一次 render 這個畫面還快，
-            // 這種情況下 port 從一開始就已經是「有值」的狀態，onChange
-            // 完全不會觸發（它只認「有沒有變」，不認「現在是什麼值」），
-            // stableOcrPort 就會永遠卡在 nil，畫面卡死在讀取畫面——即使
-            // ocr-service 本身其實完全正常（實測抓到：process 活著、
-            // port 有在監聽、curl /health 也正常回應，問題純粹出在這裡
-            // 沒有把已經存在的值撈出來）。onAppear 補上這個「一開始就
-            // 已經有值」的情況。
+            // onChange 只會在「這個 View 已經至少 render 過一次之後、值才真的
+            // 改變」才會觸發——如果服務啟動得夠快，applicationDidFinishLaunching
+            // 呼叫 start() 到真正報回 port，可能比 SwiftUI 第一次 render 這個
+            // 畫面還快，這種情況下 port 從一開始就已經是「有值」的狀態，
+            // onChange 完全不會觸發（它只認「有沒有變」，不認「現在是什麼
+            // 值」），畫面就會永遠卡在讀取狀態——即使服務本身其實完全正常
+            // （實測抓過這個情境）。onAppear 補上這個「一開始就已經有值」
+            // 的情況。
             if stableOcrPort == nil, let currentPort = ocrManager.port {
                 stableOcrPort = currentPort
+            }
+            if stableBackendPort == nil, let currentPort = backendManager.port {
+                stableBackendPort = currentPort
             }
         }
     }
 
-    private func desktopURL(ocrPort: Int) -> URL {
-        var components = URLComponents(url: webBaseURL, resolvingAgainstBaseURL: false)!
-        var queryItems = [
+    /// 讀取畫面上的文字要講清楚現在在等什麼，不要一律顯示同一句話——
+    /// backend 第一次啟動要連 Neon（冷啟動可能近 10 秒），OCR 服務則是載入
+    /// PaddleOCR 模型，兩者等待時間差很多，講明白使用者才知道是正常的。
+    private var loadingMessage: String {
+        if stableBackendPort == nil && stableOcrPort == nil {
+            return "本機服務啟動中…"
+        }
+        if stableBackendPort == nil {
+            return "本機主服務啟動中（首次連線資料庫可能需要幾秒）…"
+        }
+        return "本機 OCR 服務啟動中…"
+    }
+
+    /// API 一律打 Render，不打本機 backend——本機那支只負責供應網頁靜態
+    /// 檔案，不持有任何憑證。
+    ///
+    /// 這是刻意的安全取捨：資料庫連線字串與 LLM API 金鑰只要放進使用者
+    /// 拿得到的檔案裡，就一定能被取出來（程式執行時必須能解密才能用，
+    /// 加密或混淆只是提高門檻，不是防護）。所以憑證留在 Render，桌面版
+    /// App 只拿一個有範圍限制、可撤銷的 session token。這樣 .app 就算
+    /// 直接發給別人也不含任何值錢的東西。
+    ///
+    /// 當初把 OCR 搬到本機是因為 PaddleOCR 會把 Render 免費方案的記憶體
+    /// 打爆；LLM 呼叫與資料庫查詢對 Render 來說都很輕，留在那裡沒有負載
+    /// 問題。
+    ///
+    /// WEB_API_BASE_OVERRIDE 只在開發階段用：指到本機跑的 backend
+    /// （例如 http://127.0.0.1:5001），測試還沒部署上去的後端改動。
+    private var apiBase: String {
+        ProcessInfo.processInfo.environment["WEB_API_BASE_OVERRIDE"]
+            ?? "https://zh-cn-to-tw-backend.onrender.com"
+    }
+
+    private func desktopURL(base: URL, ocrPort: Int) -> URL {
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
             URLQueryItem(name: "desktop", value: "1"),
             URLQueryItem(name: "ocrPort", value: String(ocrPort)),
             URLQueryItem(name: "ocrToken", value: ocrManager.token),
+            URLQueryItem(name: "apiBase", value: apiBase),
         ]
-        if let apiBaseOverride {
-            queryItems.append(URLQueryItem(name: "apiBase", value: apiBaseOverride))
-        }
-        components.queryItems = queryItems
         return components.url!
     }
 }
