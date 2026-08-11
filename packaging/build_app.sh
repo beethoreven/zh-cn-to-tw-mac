@@ -50,33 +50,13 @@ fi
 
 if [ -d "$WEB_SRC_DIR" ]; then
   # 只複製網頁真正需要的檔案，不要把整個 repo（.git、README 之類）塞進去。
-  # 不複製 teacher-notice.txt 本身——桌面版執行期不會讀它（見下面的
-  # teacher-notice-content.js 產生步驟），放進去也不會被用到，是死重量。
+  # 不複製 teacher-notice.txt——桌面版跟瀏覽器版一樣，改成執行期打
+  # Render 的 /api/teacher-notice 拿內容（見 script.js 的
+  # initTeacherNotice() 說明），打包時不用管它。
   for f in index.html script.js style.css favicon.png; do
     [ -f "$WEB_SRC_DIR/$f" ] && cp "$WEB_SRC_DIR/$f" "$APP_BUNDLE/Contents/Resources/web/$f"
   done
   echo "    已內嵌網頁前端：$WEB_SRC_DIR"
-
-  # file:// 底下 JS 執行期沒有任何辦法讀到「同目錄另一個檔案」的內容
-  # （fetch 規格禁止對 file:// 發請求；XMLHttpRequest 跟隱藏 <iframe>
-  # 實測也都被 WKWebView 擋掉，見 script.js 的 initTeacherNotice() 說明）。
-  # 打包時直接把 teacher-notice.txt 的內容注入成一個全域變數，讓
-  # script.js 用 <script src> 載入（這條路是「瀏覽器自己的資源載入
-  # 管線」，不是 JS 主動發起的請求，file:// 底下能正常運作）。用
-  # python3 的 json.dumps 產生安全的 JS 字串字面值，不要自己手動處理
-  # 跳脫字元——中文字、引號、換行混在一起很容易漏掉邊界情況。
-  if [ -f "$WEB_SRC_DIR/teacher-notice.txt" ]; then
-    python3 -c "
-import json
-with open('$WEB_SRC_DIR/teacher-notice.txt', encoding='utf-8') as f:
-    content = f.read()
-with open('$APP_BUNDLE/Contents/Resources/web/teacher-notice-content.js', 'w', encoding='utf-8') as f:
-    f.write('window.__TEACHER_NOTICE_TEXT__ = ' + json.dumps(content) + ';\n')
-"
-    echo "    已注入 teacher-notice.txt 內容：$WEB_SRC_DIR/teacher-notice.txt"
-  else
-    echo "    找不到 $WEB_SRC_DIR/teacher-notice.txt，「阿舍老師的叮嚀」這次會顯示空白"
-  fi
 else
   echo "    找不到 $WEB_SRC_DIR，這次不內嵌網頁前端（App 會開不起來）"
 fi
