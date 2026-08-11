@@ -4,19 +4,6 @@ struct ContentView: View {
     @EnvironmentObject var ocrManager: OCRServiceManager
     @State private var reloadToken = UUID()
 
-    // 一旦拿到第一次成功的 port 就固定住，之後 ocrManager.port 若因為
-    // 服務短暫掛掉、重啟（甚至換了新 port）而變動，WebView 都不會因此被砍掉
-    // 重建——不然使用者畫面上所有還沒存的東西（表單填到一半、Stage 1/2 還沒
-    // 下載的結果）會直接消失。
-    //
-    // 注意這個值只決定「網址上那個查詢參數」，不是網頁實際會去打的 port：
-    // 服務重啟換 port 後，最新的值是透過 WebView 的 livePort 用 JS 推進
-    // 已經載入好的頁面（見 WebView.swift 的 updateLivePort）。兩者分開才能
-    // 同時做到「不重新載入頁面」跟「服務重啟後還能繼續用」——早期只有這個
-    // 固定值、沒有 livePort，服務閒置重啟後網頁就會一直打舊 port，出現
-    // 「無法連接伺服器」而且只有按重新整理才會好（實測撞過）。
-    @State private var stableOcrPort: Int?
-
     // 網頁前端整份包在 .app 裡（Resources/web/），用固定的 file:// 路徑
     // 直接載入，不再透過本機 backend 用 HTTP 供應。
     //
@@ -64,22 +51,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: {
-                    // 重新整理時一併確保本機 OCR 服務是活的。使用者會按這個
-                    // 按鈕，通常就是因為覺得「怪怪的、想重來一次」，而最常見
-                    // 的「怪怪的」就是服務閒置自我關閉了——如果這裡不順手把它
-                    // 拉起來，光是重新載入頁面完全救不了：服務死著的時候
-                    // ocrManager.port 是 nil，下面那個 if let 不會成立，網址上
-                    // 還是掛著已經沒人在聽的舊 port，使用者重新整理完馬上去用，
-                    // 一樣是「無法連接伺服器」（實測撞過這個情境）。
-                    // 健康檢查每 30 秒也會做同樣的事，這裡是讓使用者不必等。
-                    ocrManager.ensureRunning()
-                    // 順便把網址上的 port 也換成目前最新的。正常情況下不需要
-                    // 靠這個（服務重啟換 port 會自動用 JS 推進頁面，見
-                    // stableOcrPort 的說明），這裡只是讓重新載入後的網址跟
-                    // 現況一致，不要留一個早就過期的值在那裡誤導人。
-                    if let currentPort = ocrManager.port {
-                        stableOcrPort = currentPort
-                    }
+                    // 單純重新載入網頁。刻意不在這裡碰 OCR 服務：它是「用到
+                    // 才開、用完就關」，網頁真的要 OCR 前會自己請殼把它拉起來
+                    // （見 WebView 的 ocrService channel），使用者不需要、也
+                    // 不該為了讓 OCR 能用而先按這個按鈕。
                     reloadToken = UUID()
                 }) {
                     Image(systemName: "arrow.clockwise")
@@ -94,28 +69,25 @@ struct ContentView: View {
             }
             .padding(8)
 
-            if let ocrPort = stableOcrPort, let webURL {
-                // url 帶的是 stableOcrPort（第一次載入時的值，之後不再變動，
-                // 免得每次服務重啟都害頁面重新載入、清掉工作狀態）；
-                // livePort 帶的是「現在最新」的值，WebView 會用 JS 直接推進
-                // 已載入的頁面裡，不重新載入也能繼續打得到本機服務。
+            if let webURL {
+                // 刻意不等 OCR 服務起來才顯示網頁：服務現在是「用到才開」，
+                // 平常根本沒在跑，等它等於永遠等不到。網頁大部分功能
+                // （登入、Stage 1 潤飾、Stage 2 校對、下載）本來就跟它無關。
+                // 服務起來/關掉時的 port 變動靠 livePort 用 JS 推進頁面。
                 WebView(
-                    url: desktopURL(base: webURL, ocrPort: ocrPort),
+                    url: desktopURL(base: webURL),
                     reloadToken: reloadToken,
-                    livePort: ocrManager.port
+                    livePort: ocrManager.port,
+                    onStartOCRService: { ocrManager.ensureRunning() },
+                    onStopOCRService: { ocrManager.stop() }
                 )
             } else {
                 VStack(spacing: 8) {
-                    ProgressView()
-                    Text("本機 OCR 服務啟動中…")
+                    Text("找不到內建的網頁資源")
                         .foregroundStyle(.secondary)
-                    // ocrManager 內部有逾時 + 自動重試，這裡的按鈕是自動
-                    // 重試都用完之後，給使用者一個手動再試一次的辦法，不用逼
-                    // 使用者重開整個 App。
-                    if ocrManager.lastError != nil {
-                        Button("重試") { ocrManager.retryStart() }
-                            .padding(.top, 4)
-                    }
+                    Text("這是打包問題，請重新安裝一次")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -123,24 +95,6 @@ struct ContentView: View {
         // 900x700 放大 20%（原本預設大小偏小）。用 idealWidth/idealHeight
         // 讓這組數字也是視窗第一次開啟時的大小，不是只當作最小值。
         .frame(minWidth: 1080, idealWidth: 1080, minHeight: 840, idealHeight: 840)
-        .onChange(of: ocrManager.port) { newPort in
-            if stableOcrPort == nil, let newPort {
-                stableOcrPort = newPort
-            }
-        }
-        .onAppear {
-            // onChange 只會在「這個 View 已經至少 render 過一次之後、值才真的
-            // 改變」才會觸發——如果服務啟動得夠快，applicationDidFinishLaunching
-            // 呼叫 start() 到真正報回 port，可能比 SwiftUI 第一次 render 這個
-            // 畫面還快，這種情況下 port 從一開始就已經是「有值」的狀態，
-            // onChange 完全不會觸發（它只認「有沒有變」，不認「現在是什麼
-            // 值」），畫面就會永遠卡在讀取狀態——即使服務本身其實完全正常
-            // （實測抓過這個情境）。onAppear 補上這個「一開始就已經有值」
-            // 的情況。
-            if stableOcrPort == nil, let currentPort = ocrManager.port {
-                stableOcrPort = currentPort
-            }
-        }
     }
 
     /// API 一律打 Render，本機這裡不再有任何伺服器持有憑證。
@@ -162,11 +116,14 @@ struct ContentView: View {
             ?? "https://zh-cn-to-tw-backend.onrender.com"
     }
 
-    private func desktopURL(base: URL, ocrPort: Int) -> URL {
+    /// 刻意不帶 ocrPort：那個值會隨著服務開開關關一直變，寫進網址就等於
+    /// 每次變動都要重新載入頁面、清掉使用者做到一半的狀態。改成由 WebView
+    /// 用 JS 推進頁面的 window.__OCR_PORT__（見 WebView.updateLivePort）。
+    /// ocrToken 則是整個 App 生命週期固定的，放網址沒問題。
+    private func desktopURL(base: URL) -> URL {
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "desktop", value: "1"),
-            URLQueryItem(name: "ocrPort", value: String(ocrPort)),
             URLQueryItem(name: "ocrToken", value: ocrManager.token),
             URLQueryItem(name: "apiBase", value: apiBase),
         ]

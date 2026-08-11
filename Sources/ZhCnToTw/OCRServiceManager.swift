@@ -20,7 +20,6 @@ final class OCRServiceManager: ObservableObject {
     private let executableURL: URL
     private var process: Process?
     private var stdoutPipe: Pipe?
-    private var healthCheckTimer: Timer?
     private var startupTimeoutWorkItem: DispatchWorkItem?
     private var startupAttempt = 0
 
@@ -51,9 +50,9 @@ final class OCRServiceManager: ObservableObject {
         self.stdoutPipe = stdout
 
         // readabilityHandler/terminationHandler 都是非同步 callback，
-        // 可能延遲觸發——如果這個 process 已經死掉、health check 已經
-        // 重新拉起一個新的 process，舊 process 這兩個 callback 才姍姍
-        // 來遲，絕對不能無條件覆寫 self.port/self.process，那樣會把
+        // 可能延遲觸發——如果這個 process 已經死掉、而且已經有一個新的
+        // process 被拉起來，舊 process 這兩個 callback 才姍姍來遲，
+        // 絕對不能無條件覆寫 self.port/self.process，那樣會把
         // 新 process 已經正確設好、正常運作中的狀態蓋掉，導致畫面卡在
         // 「本機 OCR 服務啟動中」但實際上新的服務其實活得好好的（實測
         // 抓到這個情境：ps 看到 process 活著、curl /health 也正常回應，
@@ -104,7 +103,6 @@ final class OCRServiceManager: ObservableObject {
         self.process = process
         do {
             try process.run()
-            startHealthCheck()
             scheduleStartupTimeout(for: process)
         } catch {
             self.process = nil
@@ -135,9 +133,10 @@ final class OCRServiceManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupTimeoutSeconds, execute: workItem)
     }
 
-    /// 確保服務是活的：ocr-service 閒置超過設定時間會自我關閉以釋放記憶體，
-    /// 這裡負責無感重新拉起，使用者不需要重開整個 App。每 30 秒的健康檢查
-    /// 會呼叫，使用者按重新整理時也會呼叫（見 ContentView）。
+    /// 確保服務是活的。網頁在真的要用 OCR 之前會請殼呼叫這裡（見 WebView
+    /// 的 ocrService channel）——服務平常是關著的，用到才開、用完就關。
+    /// 刻意不做定時的自動重啟：那會讓「用完就關」完全失去意義，關掉沒多久
+    /// 又被拉起來，記憶體等於沒真的收回去。
     func ensureRunning() {
         guard process == nil || process?.isRunning != true else { return }
         // process 還在但已經不是 running，代表它死了、只是 terminationHandler
@@ -161,21 +160,18 @@ final class OCRServiceManager: ObservableObject {
         start()
     }
 
+    /// 關掉服務並釋放記憶體。網頁在 OCR 階段結束、結果也拿走之後會請殼
+    /// 呼叫這裡（見 WebView 的 ocrService channel），App 結束時也會呼叫。
     func stop() {
         startupTimeoutWorkItem?.cancel()
         startupTimeoutWorkItem = nil
-        healthCheckTimer?.invalidate()
-        healthCheckTimer = nil
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        // 這是我們自己主動關的，不需要再跑一次一般的終止處理（那裡會設
+        // lastError，正常關閉不該讓使用者看到錯誤訊息）。
+        process?.terminationHandler = nil
         process?.terminate()
         process = nil
         port = nil
-    }
-
-    private func startHealthCheck() {
-        healthCheckTimer?.invalidate()
-        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.ensureRunning()
-        }
+        lastError = nil
     }
 }

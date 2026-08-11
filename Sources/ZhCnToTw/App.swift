@@ -41,7 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
-        ocrManager.start()
+        // 刻意不在這裡啟動 ocr-service：它只在 Stage 1 的 OCR 那一步用得到，
+        // 網頁真的要用時才會請殼把它拉起來、用完立刻關掉（見 WebView 的
+        // ocrService channel）。PaddleOCR 跑完一份大檔案之後記憶體佔用不會
+        // 完全還回去，關掉重開才真的收得回來，所以不讓它平白跑著。
     }
 
     // Mac 慣例：關掉視窗不等於結束整個 App（跟 Safari/Mail/Finder 一致），

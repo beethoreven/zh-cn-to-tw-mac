@@ -6,14 +6,20 @@ import WebKit
 struct WebView: NSViewRepresentable {
     let url: URL
     let reloadToken: UUID
-    /// ocr-service 目前實際在聽的 port。跟 url 裡那個查詢參數不一樣：url
-    /// 的那個是頁面載入當下的值、之後不會再變（改它就等於要重新載入整個
-    /// 頁面，會清掉使用者做到一半的狀態），這個則是「現在最新」的值。
-    /// 服務閒置自我關閉、被健康檢查重新拉起時會拿到新 port，這裡把新值
-    /// 推進頁面，讓網頁不用重新載入也能繼續打得到本機服務。
+    /// ocr-service 目前實際在聽的 port，沒在跑的時候是 nil。這個值會在
+    /// 服務起來/關掉時變動，WebView 用 JS 把它推進頁面（window.__OCR_PORT__），
+    /// 網頁不用重新載入就能知道現在該打哪個 port——刻意不靠網址上的查詢
+    /// 參數，那個值改了就等於要重新載入頁面，會清掉使用者做到一半的狀態。
     let livePort: Int?
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    /// 網頁要求啟動本機 OCR 服務（使用者按下上傳、真的要用了才會呼叫）。
+    let onStartOCRService: () -> Void
+    /// 網頁通知 OCR 階段已經結束、結果也拿走了，可以把服務關掉釋放記憶體。
+    let onStopOCRService: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onStartOCRService: onStartOCRService, onStopOCRService: onStopOCRService)
+    }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -55,6 +61,8 @@ struct WebView: NSViewRepresentable {
         // 網頁那邊偵測到 desktop=1 時會呼叫這個 channel 請殼開始登入流程，
         // 不再使用 Google Identity Services 在內嵌 WebView 裡的彈出視窗。
         contentController.add(context.coordinator, name: "desktopSignIn")
+        // 網頁在真的要用 OCR 前後，透過這個 channel 請殼開/關本機 OCR 服務。
+        contentController.add(context.coordinator, name: "ocrService")
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -82,14 +90,26 @@ struct WebView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
+        private let onStartOCRService: () -> Void
+        private let onStopOCRService: () -> Void
+
+        init(onStartOCRService: @escaping () -> Void, onStopOCRService: @escaping () -> Void) {
+            self.onStartOCRService = onStartOCRService
+            self.onStopOCRService = onStopOCRService
+        }
+
         private var lastURL: URL?
         private var lastReloadToken: UUID?
 
-        /// 目前最新的 ocr-service port，跟已經推進頁面的那個值分開記：
-        /// 頁面重新載入（或還在載入中）時 window 上的變數會消失，所以
-        /// didFinish 之後要能重推一次，這裡必須留著最新值。
+        /// 目前最新的 ocr-service port（服務沒在跑時是 nil），跟已經推進
+        /// 頁面的那個值分開記：頁面重新載入（或還在載入中）時 window 上的
+        /// 變數會消失，所以 didFinish 之後要能重推一次，這裡必須留著最新值。
         var livePort: Int?
         private var pushedPort: Int?
+        /// 分辨「還沒推過任何值」跟「推過、而且推的就是 nil」——服務關掉時
+        /// 要主動把頁面上的值清成 null，不然網頁會拿著一個已經沒人在聽的
+        /// port 一直重試。光看 pushedPort 是不是 nil 沒辦法分辨這兩種情況。
+        private var hasPushedAnyValue = false
 
         // Google 登入用 window.open() 開一個彈出視窗跑 OAuth 流程，但
         // WKWebView 預設完全不處理 window.open()——瀏覽器都有內建的彈出
@@ -106,13 +126,16 @@ struct WebView: NSViewRepresentable {
             livePort = port
             // 頁面還在載入中就先不推：這時候推進去的是舊 document 的 window，
             // 新頁面載好後會被整個換掉。didFinish 會再呼叫一次補上。
-            guard let port, port != pushedPort, !webView.isLoading else { return }
+            guard !webView.isLoading else { return }
+            guard !hasPushedAnyValue || port != pushedPort else { return }
+            hasPushedAnyValue = true
             pushedPort = port
-            webView.evaluateJavaScript("window.__OCR_PORT__ = \(port);") { _, error in
+            let value = port.map(String.init) ?? "null"
+            webView.evaluateJavaScript("window.__OCR_PORT__ = \(value);") { _, error in
                 if let error {
-                    print("[webview-ocr-port] 寫入失敗（port \(port)）：\(error)")
+                    print("[webview-ocr-port] 寫入失敗（\(value)）：\(error)")
                 } else {
-                    print("[webview-ocr-port] 已推送 port \(port) 進頁面")
+                    print("[webview-ocr-port] 已推送 \(value) 進頁面")
                 }
             }
         }
@@ -124,6 +147,7 @@ struct WebView: NSViewRepresentable {
             // 要載入新頁面了，舊 document 上的 window.__OCR_PORT__ 會跟著消失，
             // 這裡把「已推送」狀態歸零，didFinish 才會重新推一次。
             pushedPort = nil
+            hasPushedAnyValue = false
 
             if url.isFileURL {
                 // 網頁前端現在是包在 .app 裡直接用 file:// 載入（見
@@ -167,6 +191,17 @@ struct WebView: NSViewRepresentable {
             switch message.name {
             case "desktopSignIn":
                 startDesktopSignIn(for: message.webView)
+            case "ocrService":
+                // 本機 OCR 服務改成「用到才開、用完就關」：它只在 Stage 1 的
+                // OCR 那一步派得上用場，其他時候（潤飾、Stage 2 校對、下載、
+                // 登入）完全沒事做，跑著只是白佔記憶體——而且 PaddleOCR 跑完
+                // 一份大檔案之後佔用不會完全還回去，關掉重開才真的收得回來。
+                let action = (message.body as? [String: Any])?["action"] as? String
+                switch action {
+                case "start": onStartOCRService()
+                case "stop": onStopOCRService()
+                default: print("[webview-ocr-service] 不認得的指令：\(message.body)")
+                }
             default:
                 print("[webview-console] \(message.body)")
             }
