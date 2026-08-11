@@ -89,12 +89,26 @@ struct WebView: NSViewRepresentable {
             guard url != lastURL || reloadToken != lastReloadToken else { return }
             lastURL = url
             lastReloadToken = reloadToken
+
+            if url.isFileURL {
+                // 網頁前端現在是包在 .app 裡直接用 file:// 載入（見
+                // ContentView.swift 的說明：改用固定的 file:// origin 是
+                // 為了讓 localStorage 裡存的登入 session token 能跨次啟動
+                // 保留下來）。file:// 一定要用 loadFileURL，WKWebView.load
+                // (URLRequest) 不支援載入本機檔案。allowingReadAccessTo
+                // 給整個 web/ 目錄（不是只給這個檔案），因為 index.html
+                // 還會用相對路徑載入同目錄下的 script.js/style.css 等。
+                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+                return
+            }
+
             // WKWebView 有自己的持久化快取（跟 Safari 一樣存在硬碟上，
-            // 重開整個 App process 不會清掉）。桌面殼載入的是線上網址，
-            // 整個設計的前提就是「前端改版不用重新發版桌面 App」——如果
-            // WebView 用舊快取的 CSS/JS，這個前提就不成立了。明確要求
-            // 略過本機快取、每次都真的去抓最新版本（實測發現：重開整個
-            // App 好幾次，畫面還是抓到舊版 CSS，就是這裡沒做的緣故）。
+            // 重開整個 App process 不會清掉）。過去桌面殼載入的是線上
+            // 網址，整個設計的前提是「前端改版不用重新發版桌面 App」——
+            // 如果 WebView 用舊快取的 CSS/JS，這個前提就不成立了。明確
+            // 要求略過本機快取、每次都真的去抓最新版本（實測發現：重開
+            // 整個 App 好幾次，畫面還是抓到舊版 CSS，就是這裡沒做的
+            // 緣故）。file:// 走上面那個分支，不會經過這裡。
             var request = URLRequest(url: url)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             webView.load(request)

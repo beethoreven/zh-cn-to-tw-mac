@@ -9,16 +9,12 @@ struct ZhCnToTwApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appDelegate.ocrManager)
-                .environmentObject(appDelegate.backendManager)
         }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let ocrManager = OCRServiceManager(executableURL: AppDelegate.resolveOCRServiceExecutable())
-    let backendManager = BackendServiceManager(
-        executableURL: AppDelegate.resolveBackendServiceExecutable()
-    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 目前是用 `swift build` 產出的裸執行檔直接執行（還沒包成正式的
@@ -30,17 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
-        // WKWebView 的 <script src>/<link> 這類子資源，實測發現不會確實
-        // 跟著 WebView.swift 那邊 URLRequest.cachePolicy 的設定走（那個
-        // 只確實影響最上層文件本身），導致改完 script.js/style.css、
-        // 甚至整個 App 重開好幾次，畫面還是抓到舊版——這裡直接把整個
-        // process 共用的 URLCache 容量歸零，從根本上不讓任何資源被快取，
-        // 確保每次都是真的去抓伺服器上最新的內容。不影響 cookie/
-        // localStorage（登入狀態靠這兩個機制存，跟 URLCache 是分開的）。
-        URLCache.shared = URLCache(memoryCapacity: 0, diskCapacity: 0)
-
         ocrManager.start()
-        backendManager.start()
     }
 
     // Mac 慣例：關掉視窗不等於結束整個 App（跟 Safari/Mail/Finder 一致），
@@ -53,7 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         ocrManager.stop()
-        backendManager.stop()
     }
 
     private static func resolveOCRServiceExecutable() -> URL {
@@ -71,23 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fatalError(
             "找不到 zh-cn-to-tw-ocr-service 執行檔。正式打包時應該被放進 App Bundle 的 "
                 + "Resources/ocr-service/ 底下；開發階段請設定 OCR_SERVICE_DEV_PATH 環境變數"
-                + "指到本機 PyInstaller 產出的執行檔。"
-        )
-    }
-
-    /// 跟 resolveOCRServiceExecutable 同一套規則，找的是本機 backend。
-    private static func resolveBackendServiceExecutable() -> URL {
-        let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("backend/zh-cn-to-tw-backend")
-        if let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) {
-            return bundled
-        }
-        if let devPath = ProcessInfo.processInfo.environment["BACKEND_SERVICE_DEV_PATH"] {
-            return URL(fileURLWithPath: devPath)
-        }
-        fatalError(
-            "找不到 zh-cn-to-tw-backend 執行檔。正式打包時應該被放進 App Bundle 的 "
-                + "Resources/backend/ 底下；開發階段請設定 BACKEND_SERVICE_DEV_PATH 環境變數"
                 + "指到本機 PyInstaller 產出的執行檔。"
         )
     }
