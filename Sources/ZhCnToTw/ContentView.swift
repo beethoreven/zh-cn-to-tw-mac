@@ -36,9 +36,22 @@ struct ContentView: View {
            let url = URL(string: override) {
             return url
         }
-        return Bundle.main.resourceURL?
-            .appendingPathComponent("web")
-            .appendingPathComponent("index.html")
+        // 用 bundlePath（純字串）手動組路徑，不要用 Bundle.main.resourceURL
+        // 這個 URL 物件去 appendingPathComponent。實測抓到：在這個環境下
+        // Bundle.main.resourceURL 回傳的 URL 內部是「相對字串 + baseURL」
+        // 的組合形式，不是單純的絕對路徑；這種 URL 表面上看起來正常
+        // （isFileURL 也回報 true），但只要經過 URLComponents(url:
+        // resolvingAgainstBaseURL: false) 這種明確不解析 baseURL 的操作
+        // （desktopURL() 為了組 ?desktop=1&ocrPort=... 這些查詢參數會這樣
+        // 做），那個 baseURL 就會被整個弄丟，只剩下相對的那一段字串，
+        // 變成完全沒有 file:// scheme 的路徑，WKWebView 會直接回報
+        // 「無法顯示URL」（WebKitErrorDomain code 101），而且從表面上
+        // 看不出問題出在 URL 本身格式不對。用 bundlePath 這個純字串手動
+        // 組、再用 URL(fileURLWithPath:) 建構，從源頭就是真正的絕對路徑，
+        // 沒有「相對+base」這種模稜兩可的中間狀態可以被弄丟。
+        let indexPath = (Bundle.main.bundlePath as NSString)
+            .appendingPathComponent("Contents/Resources/web/index.html")
+        return URL(fileURLWithPath: indexPath)
     }
 
     var body: some View {

@@ -98,7 +98,17 @@ struct WebView: NSViewRepresentable {
                 // (URLRequest) 不支援載入本機檔案。allowingReadAccessTo
                 // 給整個 web/ 目錄（不是只給這個檔案），因為 index.html
                 // 還會用相對路徑載入同目錄下的 script.js/style.css 等。
-                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+                //
+                // 這裡的 url 已經帶了 ?desktop=1&ocrPort=... 這些查詢參數
+                // （見 ContentView.swift 的 desktopURL()），如果直接對它
+                // 呼叫 deletingLastPathComponent()，拿到的「目錄」URL尾巴
+                // 還會黏著整串查詢字串（file:///.../web/?desktop=1&...），
+                // 不是乾淨的目錄路徑，WKWebView 對這種格式不對的授權目錄
+                // 會直接靜默失敗、整個頁面停在 about:blank（實測抓到）。
+                // 用 url.path 先拿掉查詢字串、重新組一個乾淨的 file URL，
+                // 再取父目錄，allowingReadAccessTo 才會是真正合法的目錄。
+                let cleanFileURL = URL(fileURLWithPath: url.path)
+                webView.loadFileURL(url, allowingReadAccessTo: cleanFileURL.deletingLastPathComponent())
                 return
             }
 
@@ -338,6 +348,23 @@ struct WebView: NSViewRepresentable {
             didBecome download: WKDownload
         ) {
             download.delegate = self
+        }
+
+        // 這三個原本完全沒實作——load(url:) 呼叫 loadFileURL 之後，如果
+        // 載入失敗，WKWebView 不會拋出 Swift 例外、也不會出現在畫面上，
+        // 就是靜默停在 about:blank。沒有這幾個 delegate 方法，這種失敗
+        // 完全看不到（實測撞過：換了新的 allowingReadAccessTo 邏輯後
+        // 畫面還是空的，只能靠這裡印出來的錯誤才知道問題出在哪）。
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            print("[webview-nav] 載入失敗（provisional）：\(error)")
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            print("[webview-nav] 載入失敗：\(error)")
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            print("[webview-nav] 載入完成：\(webView.url?.absoluteString ?? "(nil)")")
         }
 
         // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發
