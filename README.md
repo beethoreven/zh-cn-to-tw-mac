@@ -98,8 +98,6 @@ GCD 會判定這個 fd「隨時可讀」而無限次重複呼叫這個 closure�
 
 - Windows 版尚未開始（未來規劃跟這個殼架構相同，只是換一套 UI 框架）。
 - DMG 打包、簽章尚未做，目前測試都是直接跑 `.app`。
-- 這個 repo 目前沒有推上 GitHub（無 remote），也不是頂層 meta-repo 的
-  git submodule，只在本機維護。
 
 ---
 
@@ -222,7 +220,6 @@ Completes the OAuth flow through the system browser (not a popup embedded inside
 
 - A Windows version hasn't been started yet (planned to follow the same architecture, just with a different UI framework).
 - DMG packaging and code signing aren't done yet — testing so far has been running the `.app` directly.
-- This repo isn't pushed to GitHub yet (no remote), and isn't a git submodule of the top-level meta-repo — it's maintained locally only.
 
 ---
 
