@@ -27,7 +27,7 @@
 ZhCnToTw.app/
 ├── Contents/MacOS/ZhCnToTw          ← 這個 repo 編譯出來的執行檔
 └── Contents/Resources/
-    ├── web/                          ← zh-cn-to-tw-web 的靜態檔案（打包時複製進來）
+    ├── web/                          ← zh-cn-to-tw-web 的 app/ 子資料夾（打包時複製進來）
     └── ocr-service/                  ← zh-cn-to-tw-ocr-service 的 PyInstaller 產出
 ```
 
@@ -123,7 +123,7 @@ bash packaging/build_app.sh debug
 1. `swift build` 編出裸執行檔。
 2. 組出 `.app` bundle 結構（`Info.plist`、圖示）。
 3. 複製 `../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service/` 整個目錄進 `Resources/ocr-service/`（可用 `OCR_SERVICE_DIST_DIR` 環境變數覆蓋路徑）。
-4. 複製 `../zh-cn-to-tw-web/` 的 `index.html`/`script.js`/`style.css`/`favicon.png` 進 `Resources/web/`（可用 `WEB_SRC_DIR` 環境變數覆蓋路徑）。
+4. 複製 `../zh-cn-to-tw-web/app/` 的 `index.html`/`script.js`/`style.css`/`favicon.png` 進 `Resources/web/`（可用 `WEB_SRC_DIR` 環境變數覆蓋路徑）——注意是 `app/` 子資料夾，不是 `zh-cn-to-tw-web` 的 repo 根目錄；該 repo 根目錄現在是 GitHub Pages 用的公開佔位頁，見該 repo README。
 
 完成後：
 
@@ -176,7 +176,7 @@ A macOS desktop app that wraps the [`zh-cn-to-tw-web`](https://github.com/beetho
 ZhCnToTw.app/
 ├── Contents/MacOS/ZhCnToTw          ← the executable this repo builds
 └── Contents/Resources/
-    ├── web/                          ← zh-cn-to-tw-web's static files (copied in at package time)
+    ├── web/                          ← zh-cn-to-tw-web's app/ subfolder (copied in at package time)
     └── ocr-service/                  ← zh-cn-to-tw-ocr-service's PyInstaller output
 ```
 
@@ -245,7 +245,7 @@ This does:
 1. `swift build` to compile the bare executable.
 2. Assembles the `.app` bundle structure (`Info.plist`, icon).
 3. Copies the entire `../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service/` directory into `Resources/ocr-service/` (override path via `OCR_SERVICE_DIST_DIR`).
-4. Copies `../zh-cn-to-tw-web/`'s `index.html`/`script.js`/`style.css`/`favicon.png` into `Resources/web/` (override path via `WEB_SRC_DIR`).
+4. Copies `../zh-cn-to-tw-web/app/`'s `index.html`/`script.js`/`style.css`/`favicon.png` into `Resources/web/` (override path via `WEB_SRC_DIR`) — note the `app/` subfolder, not `zh-cn-to-tw-web`'s repo root; that repo's root is now GitHub Pages' public placeholder, see that repo's README.
 
 Then:
 
