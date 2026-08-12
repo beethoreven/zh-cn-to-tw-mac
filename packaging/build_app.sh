@@ -23,10 +23,7 @@ OCR_SERVICE_DIST_DIR="${OCR_SERVICE_DIST_DIR:-$REPO_ROOT/../zh-cn-to-tw-ocr-serv
 # 這也代表本機不再需要打包/啟動任何 backend：它原本除了供應網頁以外
 # 已經不持有任何憑證（API 一律打 Render，見 ContentView.swift 的
 # apiBase），現在連供應網頁都不用它做了。
-# 讀 zh-cn-to-tw-web 的 app/ 子資料夾，不是 repo 根目錄——那個 repo的
-# 根目錄現在是 GitHub Pages 用的公開佔位頁（「網站建構中」），實際的
-# 網頁內容搬到 app/ 底下了（見 zh-cn-to-tw-web README）。
-WEB_SRC_DIR="${WEB_SRC_DIR:-$REPO_ROOT/../zh-cn-to-tw-web/app}"
+WEB_SRC_DIR="${WEB_SRC_DIR:-$REPO_ROOT/../zh-cn-to-tw-web}"
 
 echo "==> swift build ($CONFIG)"
 swift build --package-path "$REPO_ROOT" -c "$CONFIG"
