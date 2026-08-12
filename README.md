@@ -13,13 +13,7 @@
 
 ### 這是什麼、為什麼需要它
 
-`zh-cn-to-tw-web` 本來只是給瀏覽器開的網頁，直接連 Render 後端做全部
-工作（含 OCR）。但 Render 免費方案完全扛不住 PaddleOCR（SIGILL、OOM，
-詳見 `zh-cn-to-tw-backend` README），解法是把 OCR 這一段搬到使用者
-自己的電腦上跑——而「把一支本機 HTTP 服務跟一份網頁前端包裝成使用者
-可以雙擊開啟的東西」，就是這個殼的職責。它本身幾乎不含業務邏輯，
-純粹是「啟動/管理本機 OCR 子行程」+「載入網頁前端」+「處理 Google
-登入這種瀏覽器層級需要系統協助的事」三件事的黏合層。
+`zh-cn-to-tw-web` 本來只是給瀏覽器開的網頁，直接連 Render 後端做全部工作（含 OCR）。但 Render 免費方案完全扛不住 PaddleOCR（SIGILL、OOM，詳見 `zh-cn-to-tw-backend` README），解法是把 OCR 這一段搬到使用者自己的電腦上跑——而「把一支本機 HTTP 服務跟一份網頁前端包裝成使用者可以雙擊開啟的東西」，就是這個殼的職責。它本身幾乎不含業務邏輯，純粹是「啟動/管理本機 OCR 子行程」+「載入網頁前端」+「處理 Google 登入這種瀏覽器層級需要系統協助的事」三件事的黏合層。
 
 ### 架構總覽
 
@@ -31,25 +25,13 @@ ZhCnToTw.app/
     └── ocr-service/                  ← zh-cn-to-tw-ocr-service 的 PyInstaller 產出
 ```
 
-App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週期」），
-只做：載入內嵌的網頁前端（`file://`）、準備好 OCR 服務管理器待命。
+App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週期」），只做：載入內嵌的網頁前端（`file://`）、準備好 OCR 服務管理器待命。
 
 ### 為什麼網頁前端改用 `file://` 載入（origin 穩定性）
 
-最早的設計是桌面殼自己啟動一份本機 backend，用 HTTP 供應網頁（連
-`http://127.0.0.1:<動態port>`）。這個 port 每次啟動都不一樣——刻意
-如此，這個專案本機測試階段吃過很多次「舊 process 卡住固定 port」的
-虧。但 `localStorage` 是照 `scheme+host+port` 算 origin 的，port
-每次不同就等於每次啟動都是全新的 origin，使用者登入後拿到的 session
-token 完全救不回來，變成每次開 App 都要重新登入（實測抓到：同一個
-bundle id 底下累積了三個不同的 `LocalStorage` 資料夾，就是這樣來的）。
+最早的設計是桌面殼自己啟動一份本機 backend，用 HTTP 供應網頁（連 `http://127.0.0.1:<動態port>`）。這個 port 每次啟動都不一樣——刻意如此，這個專案本機測試階段吃過很多次「舊 process 卡住固定 port」的虧。但 `localStorage` 是照 `scheme+host+port` 算 origin 的，port 每次不同就等於每次啟動都是全新的 origin，使用者登入後拿到的 session token 完全救不回來，變成每次開 App 都要重新登入（實測抓到：同一個 bundle id 底下累積了三個不同的 `LocalStorage` 資料夾，就是這樣來的）。
 
-改成完全不透過任何本機 HTTP 伺服器，直接用固定的 `file://` 路徑載入
-`Resources/web/index.html`——同一份安裝，每次啟動的路徑都一樣，
-origin 因此穩定，`localStorage` 能真正跨次啟動保留登入狀態。這個決定
-同時也順便解決了本機 backend 持有資料庫/LLM 憑證的問題：`file://`
-架構下桌面殼完全不需要本機 backend，backend 唯一的角色就是 Render上
-那一份，桌面版 App 裡不含任何值錢的憑證。
+改成完全不透過任何本機 HTTP 伺服器，直接用固定的 `file://` 路徑載入 `Resources/web/index.html`——同一份安裝，每次啟動的路徑都一樣，origin 因此穩定，`localStorage` 能真正跨次啟動保留登入狀態。這個決定同時也順便解決了本機 backend 持有資料庫/LLM 憑證的問題：`file://` 架構下桌面殼完全不需要本機 backend，backend 唯一的角色就是 Render上那一份，桌面版 App 裡不含任何值錢的憑證。
 
 ### 過程中踩到的 WKWebView 坑
 
@@ -61,9 +43,7 @@ origin 因此穩定，`localStorage` 能真正跨次啟動保留登入狀態。�
 4. **Swift `print()` 在 stdout 不是 TTY（例如被導向檔案/pipe）時是全緩衝，不是行緩衝**——一度讓新加的診斷 print 完全看不到輸出，一度誤以為程式碼沒有執行到那裡。`applicationDidFinishLaunching` 一開始就呼叫 `setvbuf(stdout, nil, _IONBF, 0)` 解決，這行話很可能也順便修好了既有的 console 轉送功能一直沒真正生效的問題。
 5. **`file://` 底下，網頁的 JS 執行期完全沒有辦法讀取同目錄的另一個檔案**——`fetch()` 規格明確禁止、`XMLHttpRequest` 被 WKWebView 擋、隱藏 `<iframe>` + `contentDocument` 回傳 `null`（WebKit 把同目錄下不同的 `file://` 檔案當成不同 origin）。這是「阿舍老師的叮嚀」那個功能一路改了三次才修好的根本原因，完整過程見 `zh-cn-to-tw-backend` README。
 
-這幾條後來被整理進 `known-issue-check` skill 的通用清單（不是這個
-專案獨有的踩坑記錄，而是任何桌面殼 + WKWebView 專案都可能撞到的
-模式）。
+這幾條後來被整理進 `known-issue-check` skill 的通用清單（不是這個專案獨有的踩坑記錄，而是任何桌面殼 + WKWebView 專案都可能撞到的模式）。
 
 ### OCR 服務生命週期
 
@@ -71,28 +51,15 @@ origin 因此穩定，`localStorage` 能真正跨次啟動保留登入狀態。�
 
 - **v1**：App 啟動就拉起 OCR 服務，整個執行期間開著。
 - **v2**：加「閒置 30 分鐘自我關閉」+「健康檢查每 30 秒發現沒在跑就重新拉起」——兩個機制互相打架，關掉沒多久又被拉起來，記憶體從沒真的被回收過。
-- **v3（目前）**：完全交給網頁前端主動控制。`WebView.swift` 註冊一個
-  `ocrService` 的 `WKScriptMessageHandler`，`script.js` 在真的要送 PDF
-  之前才發 `{action: "start"}`，OCR 階段結束（不管成功失敗）就發
-  `{action: "stop"}`。App 啟動時完全不主動開它。
+- **v3（目前）**：完全交給網頁前端主動控制。`WebView.swift` 註冊一個 `ocrService` 的 `WKScriptMessageHandler`，`script.js` 在真的要送 PDF 之前才發 `{action: "start"}`，OCR 階段結束（不管成功失敗）就發 `{action: "stop"}`。App 啟動時完全不主動開它。
 
-搭配的還有 port 通知機制：服務起來/關掉時，`OCRServiceManager` 會把
-最新的 port（或 `null`）透過 `WKWebView.evaluateJavaScript` 直接寫進
-網頁的 `window.__OCR_PORT__`，**刻意不透過改網址查詢參數再重新載入
-頁面**（那樣會清掉使用者填到一半的表單狀態）。
+搭配的還有 port 通知機制：服務起來/關掉時，`OCRServiceManager` 會把最新的 port（或 `null`）透過 `WKWebView.evaluateJavaScript` 直接寫進網頁的 `window.__OCR_PORT__`，**刻意不透過改網址查詢參數再重新載入頁面**（那樣會清掉使用者填到一半的表單狀態）。
 
-還有一個容易忽略的細節：`readabilityHandler`（讀取子行程 stdout 用來
-抓 port 號）在 pipe 進入 EOF（子行程結束）後，如果沒有主動解除，
-GCD 會判定這個 fd「隨時可讀」而無限次重複呼叫這個 closure——實測
-子行程一死，App 的 CPU 從 0% 直接衝到 96% 且不會回落，開了幾小時、
-中途重啟過幾次的 App 甚至量到 283%。修法是讀到空資料就把
-`handle.readabilityHandler = nil`。
+還有一個容易忽略的細節：`readabilityHandler`（讀取子行程 stdout 用來抓 port 號）在 pipe 進入 EOF（子行程結束）後，如果沒有主動解除，GCD 會判定這個 fd「隨時可讀」而無限次重複呼叫這個 closure——實測子行程一死，App 的 CPU 從 0% 直接衝到 96% 且不會回落，開了幾小時、中途重啟過幾次的 App 甚至量到 283%。修法是讀到空資料就把 `handle.readabilityHandler = nil`。
 
 ### Google 登入
 
-用系統瀏覽器完成 OAuth 流程（不是嵌在 WKWebView 裡跳出的彈窗），完成
-後把 session token 回傳給網頁前端存進 `localStorage`。見
-`GoogleDesktopSignIn.swift`。
+用系統瀏覽器完成 OAuth 流程（不是嵌在 WKWebView 裡跳出的彈窗），完成後把 session token 回傳給網頁前端存進 `localStorage`。見 `GoogleDesktopSignIn.swift`。
 
 ### 已知限制
 
@@ -107,9 +74,7 @@ GCD 會判定這個 fd「隨時可讀」而無限次重複呼叫這個 closure�
 
 - macOS 13+
 - Xcode（含 Swift 5.9+ 工具鏈）
-- 已經打包好的 `zh-cn-to-tw-ocr-service`（見該 repo 的 README，
-  `dist/zh-cn-to-tw-ocr-service/`）——沒有的話 App 還是能開，只是本機
-  OCR 功能會顯示服務啟動失敗。
+- 已經打包好的 `zh-cn-to-tw-ocr-service`（見該 repo 的 README，`dist/zh-cn-to-tw-ocr-service/`）——沒有的話 App 還是能開，只是本機 OCR 功能會顯示服務啟動失敗。
 
 ## 打包成 .app
 
@@ -133,25 +98,19 @@ open .build/ZhCnToTw.app
 
 ## 開發時的除錯技巧
 
-- App 啟動時把 stdout 導到檔案，能看到所有 `print()` 診斷訊息（包含
-  `[webview-nav]`/`[webview-console]`/`[webview-ocr-port]` 這些前綴）：
+- App 啟動時把 stdout 導到檔案，能看到所有 `print()` 診斷訊息（包含 `[webview-nav]`/`[webview-console]`/`[webview-ocr-port]` 這些前綴）：
 
 ```bash
 .build/ZhCnToTw.app/Contents/MacOS/ZhCnToTw > /tmp/app.log 2>&1 &
 tail -f /tmp/app.log
 ```
 
-- `WebView.swift` 有把 `webView.isInspectable = true`（macOS 13.3+），
-  可以用 Safari 的「開發」選單掛上完整 Web Inspector，看網路請求、
-  DOM、在主控台直接下 JS 指令。
+- `WebView.swift` 有把 `webView.isInspectable = true`（macOS 13.3+），可以用 Safari 的「開發」選單掛上完整 Web Inspector，看網路請求、DOM、在主控台直接下 JS 指令。
 
 ## 常見開發用環境變數
 
-- `WEB_BASE_URL_OVERRIDE`：不載入內嵌的 `file://` 網頁，改指到一個
-  URL（例如本機 `python3 -m http.server` 開的網址），方便前端開發時
-  不用每次改完都重新打包整個 App。
-- `WEB_API_BASE_OVERRIDE`：桌面版預設一律打正式的 Render 網址，這個
-  變數可以覆蓋成本機 backend，測試還沒部署的後端改動。
+- `WEB_BASE_URL_OVERRIDE`：不載入內嵌的 `file://` 網頁，改指到一個 URL（例如本機 `python3 -m http.server` 開的網址），方便前端開發時不用每次改完都重新打包整個 App。
+- `WEB_API_BASE_OVERRIDE`：桌面版預設一律打正式的 Render 網址，這個變數可以覆蓋成本機 backend，測試還沒部署的後端改動。
 
 ---
 
@@ -229,9 +188,7 @@ Completes the OAuth flow through the system browser (not a popup embedded inside
 
 - macOS 13+
 - Xcode (with the Swift 5.9+ toolchain)
-- A built `zh-cn-to-tw-ocr-service` (see that repo's README, produces
-  `dist/zh-cn-to-tw-ocr-service/`) — without it the app still opens,
-  but local OCR will show a startup failure.
+- A built `zh-cn-to-tw-ocr-service` (see that repo's README, produces `dist/zh-cn-to-tw-ocr-service/`) — without it the app still opens, but local OCR will show a startup failure.
 
 ## Building the .app
 
@@ -255,24 +212,16 @@ open .build/ZhCnToTw.app
 
 ## Debugging Tips During Development
 
-- Redirect stdout to a file at launch to see every `print()` diagnostic
-  (including the `[webview-nav]`/`[webview-console]`/`[webview-ocr-port]`
-  prefixed ones):
+- Redirect stdout to a file at launch to see every `print()` diagnostic (including the `[webview-nav]`/`[webview-console]`/`[webview-ocr-port]` prefixed ones):
 
 ```bash
 .build/ZhCnToTw.app/Contents/MacOS/ZhCnToTw > /tmp/app.log 2>&1 &
 tail -f /tmp/app.log
 ```
 
-- `WebView.swift` sets `webView.isInspectable = true` (macOS 13.3+), so
-  Safari's Develop menu can attach the full Web Inspector — network
-  requests, the DOM, and a live JS console.
+- `WebView.swift` sets `webView.isInspectable = true` (macOS 13.3+), so Safari's Develop menu can attach the full Web Inspector — network requests, the DOM, and a live JS console.
 
 ## Useful Dev-Time Environment Variables
 
-- `WEB_BASE_URL_OVERRIDE`: skip loading the embedded `file://` page and
-  point at a URL instead (e.g. a local `python3 -m http.server`), so
-  frontend changes don't require rebuilding the whole app every time.
-- `WEB_API_BASE_OVERRIDE`: the desktop build always hits the production
-  Render URL by default; this overrides it to a local backend for
-  testing not-yet-deployed backend changes.
+- `WEB_BASE_URL_OVERRIDE`: skip loading the embedded `file://` page and point at a URL instead (e.g. a local `python3 -m http.server`), so frontend changes don't require rebuilding the whole app every time.
+- `WEB_API_BASE_OVERRIDE`: the desktop build always hits the production Render URL by default; this overrides it to a local backend for testing not-yet-deployed backend changes.
