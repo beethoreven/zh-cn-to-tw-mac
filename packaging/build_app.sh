@@ -51,8 +51,8 @@ fi
 if [ -d "$WEB_SRC_DIR" ]; then
   # 只複製網頁真正需要的檔案，不要把整個 repo（.git、README 之類）塞進去。
   # 不複製 ta-notice.txt——它現在放在 zh-cn-to-tw-backend repo 裡，
-  # 桌面版跟瀏覽器版一樣，改成執行期打 Render 的 /api/teacher-notice
-  # 拿內容（見 script.js 的 initTeacherNotice() 說明），打包時不用管它。
+  # 桌面版跟瀏覽器版一樣，改成執行期打 Render 的 /api/ta-notice
+  # 拿內容（見 script.js 的 initTaNotice() 說明），打包時不用管它。
   for f in index.html script.js style.css favicon.png; do
     [ -f "$WEB_SRC_DIR/$f" ] && cp "$WEB_SRC_DIR/$f" "$APP_BUNDLE/Contents/Resources/web/$f"
   done
