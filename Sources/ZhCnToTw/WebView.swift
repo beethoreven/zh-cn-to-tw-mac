@@ -144,6 +144,10 @@ struct WebView: NSViewRepresentable {
             guard url != lastURL || reloadToken != lastReloadToken else { return }
             lastURL = url
             lastReloadToken = reloadToken
+            performLoad(url: url, into: webView)
+        }
+
+        private func performLoad(url: URL, into webView: WKWebView) {
             // 要載入新頁面了，舊 document 上的 window.__OCR_PORT__ 會跟著消失，
             // 這裡把「已推送」狀態歸零，didFinish 才會重新推一次。
             pushedPort = nil
@@ -438,6 +442,29 @@ struct WebView: NSViewRepresentable {
             // 頁面（重新）載好了，window 是全新的，把目前最新的 port 補推
             // 一次——updateNSView 可能在載入途中就來過、當時被跳過了。
             updateLivePort(livePort, in: webView)
+        }
+
+        // WKWebView 背後真正跑網頁的是獨立的 Web Content process（不是這個
+        // App 自己的 process），macOS 在記憶體壓力大、或這個 process 閒置
+        // 很久（App 被放到背景一整晚是常見情境）時，可能把它單獨砍掉回收
+        // 記憶體——這個 App 本身完全不會 crash，使用者只會看到 WKWebView
+        // 整片變空白/about:blank，因為底層那個 process 已經不在了。
+        //
+        // 沒實作這個 delegate 的話，這個狀態不會自動恢復：`load(url:
+        // reloadToken:into:)` 靠 lastURL/lastReloadToken 判斷「要不要重新
+        // load」，但目標 URL 跟 reloadToken 其實都沒變，使用者按左上角的
+        // 重新整理按鈕也不會觸發真正的 loadFileURL——這正好對得上回報的
+        // 「重新整理也無效」。
+        //
+        // 修法是偵測到這個事件就無條件重新走一次完整的載入流程（不透過
+        // lastURL 比對），file:// 的情況還要重新呼叫 loadFileURL 才能拿回
+        // allowingReadAccessTo 授權的沙盒存取權——那個授權是跟著舊的 Web
+        // Content process 走的，process 死了授權也跟著沒了，單純呼叫
+        // webView.reload() 對 file:// 頁面救不回來。
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            print("[webview-nav] Web Content process 已終止，重新載入")
+            guard let url = lastURL else { return }
+            performLoad(url: url, into: webView)
         }
 
         // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發
