@@ -62,6 +62,12 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 用系統瀏覽器完成 OAuth 流程（不是嵌在 WKWebView 裡跳出的彈窗），完成後把 session token 回傳給網頁前端存進 `localStorage`。見 `GoogleDesktopSignIn.swift`。
 
+### 版本管控與強制更新
+
+版控走 GitHub Releases（DMG 當附件掛上去，還沒做），版本比較邏輯只用 `CFBundleShortVersionString` 的 major/minor 兩碼，不看第三碼——`ContentView.appVersionMajorMinor` 直接用 `.` 切開字串取前兩段，拆不出兩個整數就當 `0.0`（純防禦，理論上不會發生）。`desktopURL()` 組網址時把這兩個數字用 `appMajor`/`appMinor` 帶給網頁，網頁在真的要開始 Stage 1/2 工作前打 `GET /api/version_check` 問 backend 這個版本夠不夠新，過舊就擋下操作並跳窗導去更新頁（完整流程見 `zh-cn-to-tw-web` README「桌面版的強制更新檢查」、`zh-cn-to-tw-backend` README「版本檢查」）。
+
+`os_version` 這個欄位（`app_versions` 表裡有，backend 那邊）目前完全沒用到——`LSMinimumSystemVersion` 已經寫死 `13.0`，判斷「這台機器夠不夠新」完全交給作業系統自己在啟動時擋（系統版本太舊，App 根本開不起來），沒必要在應用層再做一次重複判斷。
+
 ### 已知限制
 
 - Windows 版尚未開始（未來規劃跟這個殼架構相同，只是換一套 UI 框架）。
@@ -176,6 +182,12 @@ One easily-missed detail: the `readabilityHandler` (used to read the subprocess'
 ### Google Sign-In
 
 Completes the OAuth flow through the system browser (not a popup embedded inside WKWebView), then hands the resulting session token back to the web frontend to store in `localStorage`. See `GoogleDesktopSignIn.swift`.
+
+### Version Control and Forced Updates
+
+Version control goes through GitHub Releases (DMG as a release asset, not done yet). The version-comparison logic only uses the major/minor pair from `CFBundleShortVersionString`, ignoring any third digit — `ContentView.appVersionMajorMinor` just splits the string on `.` and takes the first two segments, falling back to `0.0` if that doesn't parse into two integers (pure defensiveness, shouldn't happen in practice). `desktopURL()` passes those two numbers to the page as `appMajor`/`appMinor`; before starting any Stage 1/2 work, the page calls `GET /api/version_check` to ask the backend whether this version is still new enough, and blocks the action with a dialog pointing to the update page if not (full flow in `zh-cn-to-tw-web`'s README, "Desktop Forced-Update Check," and `zh-cn-to-tw-backend`'s README, "Version Check").
+
+The `os_version` column (part of the backend's `app_versions` table) is currently unused — `LSMinimumSystemVersion` is already hardcoded to `13.0`, so "is this machine new enough" is left entirely to the OS itself at launch (too old a system version, and the app simply won't open); there's no need to duplicate that check at the application layer.
 
 ### Known Limitations
 

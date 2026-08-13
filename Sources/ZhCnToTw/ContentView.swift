@@ -152,16 +152,32 @@ struct ContentView: View {
             ?? "https://zh-cn-to-tw-backend.onrender.com"
     }
 
+    /// 給網頁判斷要不要跳強制更新對話框用（見 zh-cn-to-tw-backend 的
+    /// GET /api/version_check）。只拆 major/minor 兩碼，跟 DB 的
+    /// app_versions 表比較邏輯一致——CFBundleShortVersionString 本身
+    /// 現在也只有兩碼（例如 "1.0"），這裡用 "." split 直接取前兩段，
+    /// 拆不出兩個整數就當成 0.0（理論上不會發生，純防禦，不讓一個
+    /// 格式異常的版本字串讓整個 App 打不開）。
+    private var appVersionMajorMinor: (major: Int, minor: Int) {
+        let raw = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0"
+        let parts = raw.split(separator: ".").compactMap { Int($0) }
+        return (parts.first ?? 0, parts.count > 1 ? parts[1] : 0)
+    }
+
     /// 刻意不帶 ocrPort：那個值會隨著服務開開關關一直變，寫進網址就等於
     /// 每次變動都要重新載入頁面、清掉使用者做到一半的狀態。改成由 WebView
     /// 用 JS 推進頁面的 window.__OCR_PORT__（見 WebView.updateLivePort）。
-    /// ocrToken 則是整個 App 生命週期固定的，放網址沒問題。
+    /// ocrToken 則是整個 App 生命週期固定的，放網址沒問題；appMajor/
+    /// appMinor 同理，整個 App 執行期間不會變。
     private func desktopURL(base: URL) -> URL {
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        let version = appVersionMajorMinor
         components.queryItems = [
             URLQueryItem(name: "desktop", value: "1"),
             URLQueryItem(name: "ocrToken", value: ocrManager.token),
             URLQueryItem(name: "apiBase", value: apiBase),
+            URLQueryItem(name: "appMajor", value: String(version.major)),
+            URLQueryItem(name: "appMinor", value: String(version.minor)),
         ]
         return components.url!
     }
