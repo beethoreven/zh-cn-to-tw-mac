@@ -101,6 +101,7 @@ struct WebView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
 
         context.coordinator.livePort = livePort
+        context.coordinator.observeSystemSleep(for: webView)
         context.coordinator.load(url: url, reloadToken: reloadToken, into: webView)
         return webView
     }
@@ -133,6 +134,39 @@ struct WebView: NSViewRepresentable {
 
         private var lastURL: URL?
         private var lastReloadToken: UUID?
+        private var sleepObserver: NSObjectProtocol?
+
+        deinit {
+            if let sleepObserver {
+                NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
+            }
+        }
+
+        /// 系統即將睡眠前，請網頁盡量把使用者還沒下載的結果先存到本機
+        /// （見 script.js 的 window.__attemptAutoSaveBeforeSleep）。
+        ///
+        /// 刻意只用 NSWorkspace.willSleepNotification 這個簡單版本，不用
+        /// IOKit 的電源管理 API（IORegisterForSystemPower）去真的延後
+        /// 睡眠——那一套能讓 App 明確要求「再給我幾秒」，但複雜得多。這裡
+        /// 是 best-effort：收到通知就盡快觸發，來不來得及在系統真的睡著
+        /// 前跑完（尤其是 Render 剛好進入休眠、需要 30-90 秒喚醒的情況）
+        /// 沒有保證，只是能救多少算多少，不是保證機制。
+        func observeSystemSleep(for webView: WKWebView) {
+            guard sleepObserver == nil else { return }
+            sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak webView] _ in
+                webView?.evaluateJavaScript(
+                    "window.__attemptAutoSaveBeforeSleep && window.__attemptAutoSaveBeforeSleep();"
+                ) { _, error in
+                    if let error {
+                        print("[webview-sleep-guard] 觸發自動搶救失敗：\(error)")
+                    }
+                }
+            }
+        }
 
         /// 目前最新的 ocr-service port（服務沒在跑時是 nil），跟已經推進
         /// 頁面的那個值分開記：頁面重新載入（或還在載入中）時 window 上的

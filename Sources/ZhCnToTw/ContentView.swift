@@ -94,7 +94,11 @@ struct ContentView: View {
                 // 需要（也不依賴）任何 WKWebView 執行個體存在，不吃額外
                 // 的記憶體/process，也不會重演同一個問題。
                 VStack(spacing: 8) {
-                    Text("閒置超過作業系統時間上限，請點選左上角重新整理按鍵回到系統")
+                    Text("閒置超過作業系統時間上限")
+                        .foregroundStyle(.secondary)
+                    Text("若有放置執行之工作結果已儲存至下載資料夾")
+                        .foregroundStyle(.secondary)
+                    Text("請點選左上角重新整理按鍵回到系統")
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
