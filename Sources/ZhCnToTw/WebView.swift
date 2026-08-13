@@ -16,9 +16,27 @@ struct WebView: NSViewRepresentable {
     let onStartOCRService: () -> Void
     /// 網頁通知 OCR 階段已經結束、結果也拿走了，可以把服務關掉釋放記憶體。
     let onStopOCRService: () -> Void
+    /// 網頁通知「Stage 1 或 Stage 2 有工作真的開始跑了」，殼要請系統別
+    /// 把 App 睡掉（見 SystemActivityGuard）。
+    let onJobActivityStart: () -> Void
+    /// 網頁通知工作結束（成功/失敗/中斷都算），解除上面那個保護。
+    let onJobActivityStop: () -> Void
+    /// WKWebView 背後的 Web Content process 被系統砍掉了（見
+    /// webViewWebContentProcessDidTerminate 的說明）——刻意不在這裡
+    /// 自己嘗試重新載入，改由 ContentView 把這個 WebView 從畫面上整個
+    /// 拆掉、換成不吃任何資源的原生提示文字，使用者按重新整理才重建
+    /// 一個全新的 WKWebView。剛砍掉的 process 狀態可能還不穩定，直接
+    /// 在同一個 WKWebView 上硬重試不一定可靠。
+    let onWebContentProcessTerminated: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onStartOCRService: onStartOCRService, onStopOCRService: onStopOCRService)
+        Coordinator(
+            onStartOCRService: onStartOCRService,
+            onStopOCRService: onStopOCRService,
+            onJobActivityStart: onJobActivityStart,
+            onJobActivityStop: onJobActivityStop,
+            onWebContentProcessTerminated: onWebContentProcessTerminated
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -63,6 +81,9 @@ struct WebView: NSViewRepresentable {
         contentController.add(context.coordinator, name: "desktopSignIn")
         // 網頁在真的要用 OCR 前後，透過這個 channel 請殼開/關本機 OCR 服務。
         contentController.add(context.coordinator, name: "ocrService")
+        // 網頁在 Stage 1/2 工作開始/結束時，透過這個 channel 請殼開/關
+        // 系統睡眠保護（見 SystemActivityGuard 的說明）。
+        contentController.add(context.coordinator, name: "activityGuard")
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -92,10 +113,22 @@ struct WebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
         private let onStartOCRService: () -> Void
         private let onStopOCRService: () -> Void
+        private let onJobActivityStart: () -> Void
+        private let onJobActivityStop: () -> Void
+        private let onWebContentProcessTerminated: () -> Void
 
-        init(onStartOCRService: @escaping () -> Void, onStopOCRService: @escaping () -> Void) {
+        init(
+            onStartOCRService: @escaping () -> Void,
+            onStopOCRService: @escaping () -> Void,
+            onJobActivityStart: @escaping () -> Void,
+            onJobActivityStop: @escaping () -> Void,
+            onWebContentProcessTerminated: @escaping () -> Void
+        ) {
             self.onStartOCRService = onStartOCRService
             self.onStopOCRService = onStopOCRService
+            self.onJobActivityStart = onJobActivityStart
+            self.onJobActivityStop = onJobActivityStop
+            self.onWebContentProcessTerminated = onWebContentProcessTerminated
         }
 
         private var lastURL: URL?
@@ -205,6 +238,13 @@ struct WebView: NSViewRepresentable {
                 case "start": onStartOCRService()
                 case "stop": onStopOCRService()
                 default: print("[webview-ocr-service] 不認得的指令：\(message.body)")
+                }
+            case "activityGuard":
+                let action = (message.body as? [String: Any])?["action"] as? String
+                switch action {
+                case "start": onJobActivityStart()
+                case "stop": onJobActivityStop()
+                default: print("[webview-activity-guard] 不認得的指令：\(message.body)")
                 }
             default:
                 print("[webview-console] \(message.body)")
@@ -456,15 +496,18 @@ struct WebView: NSViewRepresentable {
         // 重新整理按鈕也不會觸發真正的 loadFileURL——這正好對得上回報的
         // 「重新整理也無效」。
         //
-        // 修法是偵測到這個事件就無條件重新走一次完整的載入流程（不透過
-        // lastURL 比對），file:// 的情況還要重新呼叫 loadFileURL 才能拿回
-        // allowingReadAccessTo 授權的沙盒存取權——那個授權是跟著舊的 Web
-        // Content process 走的，process 死了授權也跟著沒了，單純呼叫
-        // webView.reload() 對 file:// 頁面救不回來。
+        // 刻意不在這裡直接對同一個 webView 重新呼叫 loadFileURL 硬重試：
+        // process 剛被砍掉，這個 WKWebView 物件內部狀態可能還沒穩定，
+        // 在這個當下硬重載不一定可靠。改成往上通知 ContentView，把這個
+        // WebView 從畫面上整個拆掉（連帶釋放掉這個可能已經不穩定的
+        // WKWebView 執行個體），換成不吃任何資源的原生提示文字；使用者
+        // 按重新整理，SwiftUI 才會重新 makeNSView 出一個全新的 WKWebView，
+        // 從乾淨的狀態重新 loadFileURL（自然就會拿到全新的
+        // allowingReadAccessTo 沙盒授權，不用另外處理授權跟著舊 process
+        // 一起失效的問題）。
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            print("[webview-nav] Web Content process 已終止，重新載入")
-            guard let url = lastURL else { return }
-            performLoad(url: url, into: webView)
+            print("[webview-nav] Web Content process 已終止")
+            onWebContentProcessTerminated()
         }
 
         // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發

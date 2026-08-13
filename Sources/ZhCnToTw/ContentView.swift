@@ -3,6 +3,17 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var ocrManager: OCRServiceManager
     @State private var reloadToken = UUID()
+    // 有工作在跑時擋掉系統睡眠，見 SystemActivityGuard 的說明。純粹是
+    // ProcessInfo activity token 的包裝，不需要 SwiftUI 的變化通知
+    // （@State 這裡只是用來讓這個 class 實例跨重繪存活，不是要它驅動
+    // 畫面更新）。
+    @State private var activityGuard = SystemActivityGuard()
+    // WKWebView 背後的 Web Content process 被系統砍掉時設成 true——見
+    // WebView.swift 的 webViewWebContentProcessDidTerminate。true 的
+    // 時候把 WebView 整個從畫面上拆掉（連帶釋放掉可能已經不穩定的
+    // WKWebView 執行個體），換成不吃任何資源的原生提示文字；使用者按
+    // 重新整理才重新建立一個全新的 WebView。
+    @State private var webContentProcessDied = false
 
     // 網頁前端整份包在 .app 裡（Resources/web/），用固定的 file:// 路徑
     // 直接載入，不再透過本機 backend 用 HTTP 供應。
@@ -55,6 +66,13 @@ struct ContentView: View {
                     // 才開、用完就關」，網頁真的要 OCR 前會自己請殼把它拉起來
                     // （見 WebView 的 ocrService channel），使用者不需要、也
                     // 不該為了讓 OCR 能用而先按這個按鈕。
+                    //
+                    // webContentProcessDied 順便在這裡清掉：如果目前正顯示
+                    // 的是「Web Content process 被砍掉」的提示畫面，這個按鈕
+                    // 除了平常的重新整理，也要負責把 WebView 重新放回畫面上
+                    // （見下面 body 的條件式渲染），兩個按鈕刻意合而為一，
+                    // 使用者不用去記「現在該按哪一個」。
+                    webContentProcessDied = false
                     reloadToken = UUID()
                 }) {
                     Image(systemName: "arrow.clockwise")
@@ -69,7 +87,18 @@ struct ContentView: View {
             }
             .padding(8)
 
-            if let webURL {
+            if webContentProcessDied {
+                // 不用 WebView/WKWebView 顯示這段訊息，是刻意的：這個畫面
+                // 本來就是「WKWebView 背後的 process 剛被系統砍掉」之後
+                // 才會出現，用純原生 SwiftUI 文字取代它，這段期間完全不
+                // 需要（也不依賴）任何 WKWebView 執行個體存在，不吃額外
+                // 的記憶體/process，也不會重演同一個問題。
+                VStack(spacing: 8) {
+                    Text("閒置超過作業系統時間上限，請點選左上角重新整理按鍵回到系統")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let webURL {
                 // 刻意不等 OCR 服務起來才顯示網頁：服務現在是「用到才開」，
                 // 平常根本沒在跑，等它等於永遠等不到。網頁大部分功能
                 // （登入、Stage 1 潤飾、Stage 2 校對、下載）本來就跟它無關。
@@ -79,7 +108,10 @@ struct ContentView: View {
                     reloadToken: reloadToken,
                     livePort: ocrManager.port,
                     onStartOCRService: { ocrManager.ensureRunning() },
-                    onStopOCRService: { ocrManager.stop() }
+                    onStopOCRService: { ocrManager.stop() },
+                    onJobActivityStart: { activityGuard.start() },
+                    onJobActivityStop: { activityGuard.stop() },
+                    onWebContentProcessTerminated: { webContentProcessDied = true }
                 )
             } else {
                 VStack(spacing: 8) {
