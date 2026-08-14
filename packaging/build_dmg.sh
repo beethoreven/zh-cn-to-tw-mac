@@ -8,7 +8,11 @@
 # 裡的 dmg-readme.txt，裡面寫了怎麼在系統設定裡允許打開。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 用 readlink -f 先把符號連結（例如頂層 meta-repo 的 build_mac_dmg.sh
+# 就是連到這支檔案）解成真正的實體路徑，才能正確算出這個 repo 的根目錄
+# ——直接對 BASH_SOURCE[0] 取 dirname 的話，經由 symlink 執行時算出來
+# 的會是 symlink 自己所在的位置，不是這支腳本實際所在的位置。
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CONFIG="${1:-debug}"
 APP_NAME="ZhCnToTw"
 APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"

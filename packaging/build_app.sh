@@ -7,7 +7,11 @@
 # 這樣測試不用再手動帶 OCR_SERVICE_DEV_PATH 環境變數。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 用 readlink -f 先把符號連結解成真正的實體路徑，才能正確算出這個
+# repo 的根目錄——直接對 BASH_SOURCE[0] 取 dirname 的話，經由 symlink
+# 執行時算出來的會是 symlink 自己所在的位置，不是這支腳本實際所在的
+# 位置（見 build_dmg.sh 同樣的處理）。
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CONFIG="${1:-debug}"
 APP_NAME="ZhCnToTw"
 APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"
