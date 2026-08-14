@@ -7,6 +7,15 @@
 # 這樣測試不用再手動帶 OCR_SERVICE_DEV_PATH 環境變數。
 set -euo pipefail
 
+# 固定用 C locale，不要依賴呼叫端終端機的語系設定——macOS 內建的 bash
+# 停在 3.2（Apple 因為授權問題，十幾年沒再更新過），這個版本搭配
+# UTF-8 語系、加上 set -u，對「雙引號字串裡 $VAR 後面緊接全形字元、
+# 中間沒有空格」這個組合有解析 bug，會把展開結果後面的位元組誤判成
+# 變數名稱的一部分，報出莫名其妙的「XXX？: unbound variable」（在
+# build_dmg.sh 實測撞過，見那支腳本的說明）。C locale 下不會觸發那段
+# 有問題的 multibyte 解析，且完全不影響 echo 出來的中文字。
+export LC_ALL=C
+
 # 用 readlink -f 先把符號連結解成真正的實體路徑，才能正確算出這個
 # repo 的根目錄——直接對 BASH_SOURCE[0] 取 dirname 的話，經由 symlink
 # 執行時算出來的會是 symlink 自己所在的位置，不是這支腳本實際所在的

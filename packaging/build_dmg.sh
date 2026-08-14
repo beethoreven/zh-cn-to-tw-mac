@@ -8,6 +8,17 @@
 # 裡的 dmg-readme.txt，裡面寫了怎麼在系統設定裡允許打開。
 set -euo pipefail
 
+# 固定用 C locale，不要依賴呼叫端終端機的語系設定。macOS 內建的
+# bash 停在 3.2（Apple 因為授權問題，十幾年沒再更新過），這個版本
+# 搭配 UTF-8 語系、加上 set -u，對「雙引號字串裡 $VAR 後面緊接全形
+# 字元、中間沒有空格」這個組合有解析 bug，會把展開結果後面的位元組
+# 誤判成變數名稱的一部分，報出莫名其妙的「XXX？: unbound variable」
+# ——實測撞過（$VERSION 後面直接接「）」）。C locale 下 bash 不會做
+# 那段有問題的 multibyte 解析，且完全不影響 echo 出來的中文字（那是
+# 終端機自己的事，跟 bash 的 LC_ALL 無關），純粹是繞開這個 bash 版本
+# 的 bug，不是妥協。
+export LC_ALL=C
+
 # 用 readlink -f 先把符號連結（例如頂層 meta-repo 的 build_mac_dmg.sh
 # 就是連到這支檔案）解成真正的實體路徑，才能正確算出這個 repo 的根目錄
 # ——直接對 BASH_SOURCE[0] 取 dirname 的話，經由 symlink 執行時算出來
