@@ -22,8 +22,17 @@ export LC_ALL=C
 # 位置（見 build_dmg.sh 同樣的處理）。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CONFIG="${1:-debug}"
-APP_NAME="ZhCnToTw"
-APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"
+# 裸執行檔的名字（Package.swift 的 target 名稱、也是 Info.plist 的
+# CFBundleExecutable）——這是內部實作細節，使用者從來不會直接看到這個
+# 檔名（Finder 只會顯示 .app bundle 本身的名字），維持 ZhCnToTw 不用
+# 跟著 App 顯示名稱changed。
+EXECUTABLE_NAME="ZhCnToTw"
+# .app bundle 資料夾本身的名字，這才是 Finder/Dock 實際顯示給使用者
+# 看的檔名——跟 Info.plist 的 CFBundleName/CFBundleDisplayName（App
+# 執行時的視窗標題）要維持一致，不然「檔案總管看到的名字」跟「App
+# 開起來之後的標題」會對不起來。
+APP_DISPLAY_NAME="繁化助手"
+APP_BUNDLE="$REPO_ROOT/.build/$APP_DISPLAY_NAME.app"
 
 # 預設抓本機端 zh-cn-to-tw-ocr-service repo 已經打包好的 PyInstaller
 # onedir 產出；可用環境變數覆蓋，方便之後在別台機器上打包。
@@ -47,7 +56,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources/ocr-service"
 mkdir -p "$APP_BUNDLE/Contents/Resources/web"
 
-cp "$REPO_ROOT/.build/$CONFIG/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$REPO_ROOT/.build/$CONFIG/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp "$REPO_ROOT/packaging/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$REPO_ROOT/packaging/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 

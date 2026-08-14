@@ -25,8 +25,16 @@ export LC_ALL=C
 # 的會是 symlink 自己所在的位置，不是這支腳本實際所在的位置。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 CONFIG="${1:-debug}"
-APP_NAME="ZhCnToTw"
-APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"
+# 跟 build_app.sh 的 APP_DISPLAY_NAME 保持一致——這是 .app bundle 資料夾
+# 本身的名字，也是 DMG 掛載時使用者看到的磁碟區名稱、DMG 檔名本身，
+# 三個地方統一，不然「Finder 看到的檔名」「DMG 打開後看到的名稱」
+# 「App 開起來的標題」會兜不起來（實測撞過：改了 Info.plist 裡的
+# CFBundleName/CFBundleDisplayName，以為就是「改 App 名字」，結果
+# .app 檔案本身還是叫 ZhCnToTw.app，Finder/DMG 看到的完全沒變——
+# Info.plist 那兩個欄位只影響 App 執行時的身份，不影響檔案本身的
+# 名稱）。
+APP_DISPLAY_NAME="繁化助手"
+APP_BUNDLE="$REPO_ROOT/.build/$APP_DISPLAY_NAME.app"
 STAGING_DIR="$REPO_ROOT/.build/dmg-staging"
 # 最終要交給使用者的成品放在看得到的 dist/ 資料夾，不是 .build/——
 # .build 是 SwiftPM 自己的中間產物目錄，Finder 預設隱藏，適合放編譯
@@ -44,7 +52,7 @@ fi
 # 手動輸入一次版本號，兩個地方各自維護遲早會兜不起來。
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_BUNDLE/Contents/Info.plist")"
 mkdir -p "$DIST_DIR"
-DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+DMG_PATH="$DIST_DIR/$APP_DISPLAY_NAME-$VERSION.dmg"
 
 echo "==> 準備 DMG 內容（版本 $VERSION）"
 rm -rf "$STAGING_DIR"
@@ -59,7 +67,7 @@ echo "==> 封裝成 DMG"
 rm -f "$DMG_PATH"
 # UDZO：壓縮過、唯讀的映像格式，一般發布軟體用的就是這種，不是
 # 給使用者事後編輯內容用的可寫映像。
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
+hdiutil create -volname "$APP_DISPLAY_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 
 rm -rf "$STAGING_DIR"
 
