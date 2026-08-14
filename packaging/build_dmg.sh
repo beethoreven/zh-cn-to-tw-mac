@@ -28,6 +28,11 @@ CONFIG="${1:-debug}"
 APP_NAME="ZhCnToTw"
 APP_BUNDLE="$REPO_ROOT/.build/$APP_NAME.app"
 STAGING_DIR="$REPO_ROOT/.build/dmg-staging"
+# 最終要交給使用者的成品放在看得到的 dist/ 資料夾，不是 .build/——
+# .build 是 SwiftPM 自己的中間產物目錄，Finder 預設隱藏，適合放編譯
+# 過程的雜物，不適合放真正要拿去測試/發布的東西。跟
+# zh-cn-to-tw-ocr-service 用 dist/ 放 PyInstaller 成品是同一個慣例。
+DIST_DIR="$REPO_ROOT/dist"
 
 if [ ! -d "$APP_BUNDLE" ]; then
   echo "找不到 $APP_BUNDLE，先跑 bash packaging/build_app.sh $CONFIG 打包出 .app"
@@ -38,7 +43,8 @@ fi
 # Releases 時一眼看出對應哪一版——直接讀 .app 裡的 Info.plist，不要
 # 手動輸入一次版本號，兩個地方各自維護遲早會兜不起來。
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_BUNDLE/Contents/Info.plist")"
-DMG_PATH="$REPO_ROOT/.build/$APP_NAME-$VERSION.dmg"
+mkdir -p "$DIST_DIR"
+DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
 
 echo "==> 準備 DMG 內容（版本 $VERSION）"
 rm -rf "$STAGING_DIR"

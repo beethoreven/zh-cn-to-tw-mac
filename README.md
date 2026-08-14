@@ -118,7 +118,7 @@ bash packaging/build_dmg.sh debug
 2. 準備一個暫存資料夾：放進 `.app`、一個指向 `/Applications` 的捷徑（使用者拖曳安裝用）、`packaging/dmg-readme.txt`（沒有簽章、第一次打開被 Gatekeeper 擋下來時怎麼在系統設定裡允許）。
 3. 用 `hdiutil create` 把這個資料夾封裝成壓縮、唯讀的 `.dmg`（`UDZO` 格式，一般軟體發布用的就是這種）。
 
-完成後在 `.build/ZhCnToTw-<版本>.dmg`，`open` 它會跟使用者實際看到的畫面一樣（掛載、跳出視窗、把 App 拖進 Applications）。
+完成後在 `dist/ZhCnToTw-<版本>.dmg`（不是 `.build/`——那是 SwiftPM 自己的中間產物目錄，Finder 預設隱藏；`dist/` 才是放真正成品的地方，跟 `zh-cn-to-tw-ocr-service` 用 `dist/` 放 PyInstaller 產出是同一個慣例），`open` 它會跟使用者實際看到的畫面一樣（掛載、跳出視窗、把 App 拖進 Applications）。
 
 **沒有簽章、沒有公證**——需要付費的 Apple Developer 帳號，這個專案刻意跳過，所以使用者第一次打開會被 Gatekeeper 擋下來，這是預期行為，DMG 裡的說明文字已經涵蓋怎麼處理。
 
@@ -258,7 +258,7 @@ This does:
 2. Prepares a staging folder: the `.app`, a symlink to `/Applications` (the drag target users see), and `packaging/dmg-readme.txt` (how to allow the app in System Settings when Gatekeeper blocks first launch, since it's unsigned).
 3. Packages that folder into a compressed, read-only `.dmg` with `hdiutil create` (`UDZO` format — the standard one used for shipping software).
 
-The result lands at `.build/ZhCnToTw-<version>.dmg`; `open`ing it shows exactly what an end user would see (mounts, opens a window, drag the app into Applications).
+The result lands at `dist/ZhCnToTw-<version>.dmg` (not `.build/` — that's SwiftPM's own intermediate-artifact directory, hidden by Finder by default; `dist/` is where the actual shippable output goes, the same convention `zh-cn-to-tw-ocr-service` uses for its PyInstaller output); `open`ing it shows exactly what an end user would see (mounts, opens a window, drag the app into Applications).
 
 **No code signing, no notarization** — that needs a paid Apple Developer account, which this project deliberately skips, so users get blocked by Gatekeeper on first launch. That's expected; the bundled readme text already covers what to do about it.
 
