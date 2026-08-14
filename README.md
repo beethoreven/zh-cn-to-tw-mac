@@ -71,7 +71,8 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 ### 已知限制
 
 - Windows 版尚未開始（未來規劃跟這個殼架構相同，只是換一套 UI 框架）。
-- DMG 打包、簽章尚未做，目前測試都是直接跑 `.app`。
+- **刻意不做程式碼簽章／公證**：需要付費的 Apple Developer 帳號，這個專案跳過。DMG 打包已經做了（`packaging/build_dmg.sh`），但沒有簽章代表使用者第一次打開會被 Gatekeeper 擋下來，DMG 裡附了 `dmg-readme.txt` 說明怎麼在系統設定裡允許。
+- DMG 目前只能在本機手動跑腳本產出，還沒有掛到 GitHub Releases 做版本控管（規劃中）。
 
 ---
 
@@ -102,6 +103,24 @@ bash packaging/build_app.sh debug
 ```bash
 open .build/ZhCnToTw.app
 ```
+
+## 打包成 .dmg
+
+先照上面步驟打包出 `.app`，再跑：
+
+```bash
+bash packaging/build_dmg.sh debug
+```
+
+會做這些事：
+
+1. 讀 `.app` 裡 `Info.plist` 的 `CFBundleShortVersionString`，決定輸出檔名（`ZhCnToTw-<版本>.dmg`）——版本號只在 `Info.plist` 維護一份，不在這裡另外手動輸入一次。
+2. 準備一個暫存資料夾：放進 `.app`、一個指向 `/Applications` 的捷徑（使用者拖曳安裝用）、`packaging/dmg-readme.txt`（沒有簽章、第一次打開被 Gatekeeper 擋下來時怎麼在系統設定裡允許）。
+3. 用 `hdiutil create` 把這個資料夾封裝成壓縮、唯讀的 `.dmg`（`UDZO` 格式，一般軟體發布用的就是這種）。
+
+完成後在 `.build/ZhCnToTw-<版本>.dmg`，`open` 它會跟使用者實際看到的畫面一樣（掛載、跳出視窗、把 App 拖進 Applications）。
+
+**沒有簽章、沒有公證**——需要付費的 Apple Developer 帳號，這個專案刻意跳過，所以使用者第一次打開會被 Gatekeeper 擋下來，這是預期行為，DMG 裡的說明文字已經涵蓋怎麼處理。
 
 ## 開發時的除錯技巧
 
@@ -192,7 +211,8 @@ The `os_version` column (part of the backend's `app_versions` table) is currentl
 ### Known Limitations
 
 - A Windows version hasn't been started yet (planned to follow the same architecture, just with a different UI framework).
-- DMG packaging and code signing aren't done yet — testing so far has been running the `.app` directly.
+- **Deliberately no code signing or notarization**: that needs a paid Apple Developer account, which this project skips. DMG packaging is done (`packaging/build_dmg.sh`), but being unsigned means Gatekeeper blocks first launch; the DMG bundles a `dmg-readme.txt` explaining how to allow it in System Settings.
+- The DMG can currently only be produced by running the script locally — it isn't published to GitHub Releases for version control yet (planned).
 
 ---
 
@@ -223,6 +243,24 @@ Then:
 ```bash
 open .build/ZhCnToTw.app
 ```
+
+## Building the .dmg
+
+Build the `.app` first per the steps above, then run:
+
+```bash
+bash packaging/build_dmg.sh debug
+```
+
+This does:
+
+1. Reads `CFBundleShortVersionString` from the `.app`'s `Info.plist` to name the output (`ZhCnToTw-<version>.dmg`) — the version number is maintained in exactly one place (`Info.plist`), not typed in again here.
+2. Prepares a staging folder: the `.app`, a symlink to `/Applications` (the drag target users see), and `packaging/dmg-readme.txt` (how to allow the app in System Settings when Gatekeeper blocks first launch, since it's unsigned).
+3. Packages that folder into a compressed, read-only `.dmg` with `hdiutil create` (`UDZO` format — the standard one used for shipping software).
+
+The result lands at `.build/ZhCnToTw-<version>.dmg`; `open`ing it shows exactly what an end user would see (mounts, opens a window, drag the app into Applications).
+
+**No code signing, no notarization** — that needs a paid Apple Developer account, which this project deliberately skips, so users get blocked by Gatekeeper on first launch. That's expected; the bundled readme text already covers what to do about it.
 
 ## Debugging Tips During Development
 
