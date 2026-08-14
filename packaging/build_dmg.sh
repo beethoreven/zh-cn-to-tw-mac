@@ -62,6 +62,15 @@ cp -R "$APP_BUNDLE" "$STAGING_DIR/"
 # 這個捷徑本身幾乎不佔空間，純粹是給拖曳用的視覺目標。
 ln -s /Applications "$STAGING_DIR/Applications"
 cp "$REPO_ROOT/packaging/dmg-readme.txt" "$STAGING_DIR/請先看我 - 安裝說明.txt"
+# .command 副檔名是 macOS Terminal 的慣例：Finder 雙擊 .command 檔案
+# 會直接開一個 Terminal 視窗執行它，不用使用者自己打開終端機、cd 過去、
+# 下 bash 指令——一般使用者不會用終端機，這是讓「解除安裝」對他們來說
+# 真的可操作的關鍵。內容直接複製 uninstall.sh，不是另外維護一份，
+# 避免兩邊邏輯之後兜不起來；一定要在複製後另外下 chmod +x，來源檔案
+# 的可執行權限不會被 cp 之外的方式保留、且 DMG 封裝時的權限最終看的
+# 是這裡複製出來的這一份。
+cp "$REPO_ROOT/packaging/uninstall.sh" "$STAGING_DIR/解除安裝.command"
+chmod +x "$STAGING_DIR/解除安裝.command"
 
 echo "==> 封裝成 DMG"
 rm -f "$DMG_PATH"

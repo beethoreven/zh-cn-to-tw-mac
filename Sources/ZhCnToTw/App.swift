@@ -13,6 +13,17 @@ struct ZhCnToTwApp: App {
             ContentView()
                 .environmentObject(appDelegate.ocrManager)
         }
+        // 放在「關於」旁邊——使用者會直覺去 App 選單（第一個、以 App
+        // 名稱命名的那個）底下找這類跟整個 App 生命週期有關的動作，
+        // 跟「關於」「服務」「結束」放在一起最容易被找到。見
+        // Uninstaller.swift 的完整說明。
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("解除安裝「繁化助手」…") {
+                    Uninstaller.run()
+                }
+            }
+        }
     }
 }
 
