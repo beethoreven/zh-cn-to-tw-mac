@@ -9,9 +9,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.beethoreven.zh-cn-to-tw</string>
 	<key>CFBundleName</key>
-	<string>劇本殺繁化助手</string>
+	<string>繁化助手</string>
 	<key>CFBundleDisplayName</key>
-	<string>劇本殺繁化助手</string>
+	<string>繁化助手</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

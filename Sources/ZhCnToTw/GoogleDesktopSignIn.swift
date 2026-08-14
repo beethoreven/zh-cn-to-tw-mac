@@ -175,7 +175,7 @@ final class GoogleDesktopSignIn {
     private func respond(on connection: NWConnection, success: Bool, then completion: @escaping () -> Void) {
         let message = success
             ? "登入完成，請關閉此頁面。"
-            : "登入失敗，請回到「劇本殺繁化助手」重試。"
+            : "登入失敗，請回到「繁化助手」重試。"
         // window.close() 實測對這個分頁沒用——這個分頁是系統瀏覽器直接
         // 開的，不是被 JS（window.open()）開的，瀏覽器基於安全考量不會
         // 讓網頁關掉這種分頁，沒有其他純 JS 端的繞過方式。真正可靠的是
