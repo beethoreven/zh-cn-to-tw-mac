@@ -84,6 +84,13 @@ struct WebView: NSViewRepresentable {
         // 網頁在 Stage 1/2 工作開始/結束時，透過這個 channel 請殼開/關
         // 系統睡眠保護（見 SystemActivityGuard 的說明）。
         contentController.add(context.coordinator, name: "activityGuard")
+        // macOS 12- 那包沒有 WKDownload（見下面 WKDownloadDelegate 那段
+        // extension 的說明，那組 API 要 11.3+），下載改靠這個 channel：
+        // 網頁把檔案內容整個轉成 base64 直接 postMessage 過來，殼收到
+        // 後解碼寫檔。這個 channel 本身完全沒用到任何版本限定的新 API，
+        // 兩包都註冊、都能用，只是 13+ 那包的 script.js 平常走
+        // WKDownload 那條路，不會用到這裡。
+        contentController.add(context.coordinator, name: "legacyDownload")
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -111,7 +118,11 @@ struct WebView: NSViewRepresentable {
         context.coordinator.updateLivePort(livePort, in: webView)
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
+    // WKDownloadDelegate 本身（連同 WKDownload 這個型別）要 macOS 11.3+
+    // 才有——見下面那段 extension 的說明。這個 class 的宣告本身刻意不列
+    // WKDownloadDelegate，讓這份原始碼在 12- 那包（部署目標 10.15）也能
+    // 編譯過；相關方法全部搬到下面用 @available 包起來的 extension 裡。
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
         private let onStartOCRService: () -> Void
         private let onStopOCRService: () -> Void
         private let onJobActivityStart: () -> Void
@@ -280,8 +291,43 @@ struct WebView: NSViewRepresentable {
                 case "stop": onJobActivityStop()
                 default: print("[webview-activity-guard] 不認得的指令：\(message.body)")
                 }
+            case "legacyDownload":
+                handleLegacyDownload(message.body, webView: message.webView)
             default:
                 print("[webview-console] \(message.body)")
+            }
+        }
+
+        // macOS 12- 那包沒有 WKDownload（要 11.3+，見下面 extension 的
+        // 說明），下載改靠這個 channel：網頁把整份檔案內容轉成 base64
+        // 直接 postMessage 過來，這裡解碼寫檔——不需要用到任何版本限定
+        // 的新 WebKit API，純粹是 WKScriptMessageHandler（很舊、兩包都
+        // 能用）+ Foundation 的檔案寫入。跟 WKDownload 那條路共用同一個
+        // uniqueDestination 命名規則、同一個 showToast 通知使用者的方式，
+        // 只是觸發來源不同。
+        private func handleLegacyDownload(_ body: Any, webView: WKWebView?) {
+            guard let dict = body as? [String: Any],
+                  let filename = dict["filename"] as? String,
+                  let base64 = dict["base64"] as? String,
+                  let data = Data(base64Encoded: base64)
+            else {
+                print("[webview-legacy-download] 收到的訊息格式不對：\(body)")
+                return
+            }
+            let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            guard let downloadsDir else {
+                webView?.evaluateJavaScript("showToast('下載失敗：找不到下載資料夾', 'error')")
+                return
+            }
+            let destination = Self.uniqueDestination(in: downloadsDir, filename: filename)
+            do {
+                try data.write(to: destination)
+                let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
+                webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
+            } catch {
+                print("[webview-legacy-download] 寫檔失敗：\(error)")
+                let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
+                webView?.evaluateJavaScript("showToast('\(message)', 'error')")
             }
         }
 
@@ -474,7 +520,13 @@ struct WebView: NSViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            if navigationAction.shouldPerformDownload {
+            // shouldPerformDownload 跟 .download 這個 case 本身都要
+            // macOS 11.3+（見下面 WKDownloadDelegate extension 的說明）。
+            // 12- 那包的 script.js 已經改用 legacyDownload channel，不會
+            // 走到這條 blob: 導覽被攔下來要求下載的路，這裡的
+            // #available 純粹是讓程式碼在低於 11.3 的部署目標下也能編譯，
+            // 不是期待它在舊系統上真的被觸發。
+            if #available(macOS 11.3, *), navigationAction.shouldPerformDownload {
                 decisionHandler(.download)
                 return
             }
@@ -488,14 +540,6 @@ struct WebView: NSViewRepresentable {
                 return
             }
             decisionHandler(.allow)
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            navigationAction: WKNavigationAction,
-            didBecome download: WKDownload
-        ) {
-            download.delegate = self
         }
 
         // 這三個原本完全沒實作——load(url:) 呼叫 loadFileURL 之後，如果
@@ -547,41 +591,12 @@ struct WebView: NSViewRepresentable {
         // decideDestinationUsing 選好的路徑記下來，downloadDidFinish 觸發
         // 時才知道要在 toast 裡告訴使用者存到哪裡了——WKDownload 本身沒有
         // 內建「記得自己存去哪」這件事，完成 callback 也不會帶路徑回來。
-        private var downloadDestinations: [ObjectIdentifier: URL] = [:]
+        // 這個字典本身是普通型別（不含任何版本限定的東西），留在 class
+        // 本體裡；用到它的三個 WKDownloadDelegate 方法搬到下面 11.3+ 的
+        // extension（stored property 不能宣告在 extension 裡）。
+        fileprivate var downloadDestinations: [ObjectIdentifier: URL] = [:]
 
-        func download(
-            _ download: WKDownload,
-            decideDestinationUsing response: URLResponse,
-            suggestedFilename: String,
-            completionHandler: @escaping (URL?) -> Void
-        ) {
-            // 直接存到使用者的「下載項目」資料夾，跟一般瀏覽器預設行為
-            // 一致，不特別跳存檔視窗；檔名如果已存在就加上流水號，避免
-            // 覆蓋掉使用者之前下載的同名檔案。
-            let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            guard let downloadsDir else {
-                completionHandler(nil)
-                return
-            }
-            let destination = Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
-            downloadDestinations[ObjectIdentifier(download)] = destination
-            completionHandler(destination)
-        }
-
-        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-            downloadDestinations[ObjectIdentifier(download)] = nil
-            print("[webview-download] 失敗：\(error)")
-            let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
-            download.webView?.evaluateJavaScript("showToast('\(message)', 'error')")
-        }
-
-        func downloadDidFinish(_ download: WKDownload) {
-            guard let destination = downloadDestinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
-            let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
-            download.webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
-        }
-
-        private static func uniqueDestination(in directory: URL, filename: String) -> URL {
+        fileprivate static func uniqueDestination(in directory: URL, filename: String) -> URL {
             let ext = (filename as NSString).pathExtension
             let base = (filename as NSString).deletingPathExtension
             var candidate = directory.appendingPathComponent(filename)
@@ -593,5 +608,54 @@ struct WebView: NSViewRepresentable {
             }
             return candidate
         }
+    }
+}
+
+// WKDownload/WKDownloadDelegate 整組 API（連同 WKNavigationActionPolicy
+// 的 .download case）都是 macOS 11.3+ 才有——13+ 那包沒問題，但 12- 那包
+// 部署目標壓到 10.15，這個 extension 對它來說整段都不存在，同一份原始碼
+// 才能同時餵給兩個 Package.swift。12- 那包的下載改走 legacyDownload
+// channel（見上面 Coordinator 的 handleLegacyDownload），完全不需要
+// WKDownload。
+@available(macOS 11.3, *)
+extension WebView.Coordinator: WKDownloadDelegate {
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        // 直接存到使用者的「下載項目」資料夾，跟一般瀏覽器預設行為
+        // 一致，不特別跳存檔視窗；檔名如果已存在就加上流水號，避免
+        // 覆蓋掉使用者之前下載的同名檔案。
+        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard let downloadsDir else {
+            completionHandler(nil)
+            return
+        }
+        let destination = Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
+        downloadDestinations[ObjectIdentifier(download)] = destination
+        completionHandler(destination)
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        downloadDestinations[ObjectIdentifier(download)] = nil
+        print("[webview-download] 失敗：\(error)")
+        let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
+        download.webView?.evaluateJavaScript("showToast('\(message)', 'error')")
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let destination = downloadDestinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
+        download.webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
     }
 }

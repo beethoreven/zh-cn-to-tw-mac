@@ -1,0 +1,1 @@
+../../../Sources/ZhCnToTw/SystemActivityGuard.swift

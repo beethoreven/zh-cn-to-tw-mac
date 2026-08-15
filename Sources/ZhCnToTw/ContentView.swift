@@ -58,31 +58,42 @@ struct ContentView: View {
         return URL(fileURLWithPath: indexPath)
     }
 
+    // 單純重新載入網頁。刻意不在這裡碰 OCR 服務：它是「用到才開、用完就
+    // 關」，網頁真的要 OCR 前會自己請殼把它拉起來（見 WebView 的
+    // ocrService channel），使用者不需要、也不該為了讓 OCR 能用而先按
+    // 這個按鈕。
+    //
+    // webContentProcessDied 順便在這裡清掉：如果目前正顯示的是「Web
+    // Content process 被砍掉」的提示畫面，這個按鈕除了平常的重新整理，
+    // 也要負責把 WebView 重新放回畫面上（見下面 body 的條件式渲染），
+    // 兩個按鈕刻意合而為一，使用者不用去記「現在該按哪一個」。
+    private func reloadPage() {
+        webContentProcessDied = false
+        reloadToken = UUID()
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button(action: {
-                    // 單純重新載入網頁。刻意不在這裡碰 OCR 服務：它是「用到
-                    // 才開、用完就關」，網頁真的要 OCR 前會自己請殼把它拉起來
-                    // （見 WebView 的 ocrService channel），使用者不需要、也
-                    // 不該為了讓 OCR 能用而先按這個按鈕。
-                    //
-                    // webContentProcessDied 順便在這裡清掉：如果目前正顯示
-                    // 的是「Web Content process 被砍掉」的提示畫面，這個按鈕
-                    // 除了平常的重新整理，也要負責把 WebView 重新放回畫面上
-                    // （見下面 body 的條件式渲染），兩個按鈕刻意合而為一，
-                    // 使用者不用去記「現在該按哪一個」。
-                    webContentProcessDied = false
-                    reloadToken = UUID()
-                }) {
-                    Image(systemName: "arrow.clockwise")
+                // Image(systemName:) 跟 .help() 都要 macOS 11.0+（12- 那包
+                // 部署目標是 10.15，實測 swift build 直接報「'help' is only
+                // available in macOS 11.0 or newer」）。這裡分兩支：11.0+
+                // 用原本的圖示按鈕，以下退回純文字按鈕——這個檔案是符號
+                // 連結，13+ 跟 12- 兩個 target 共用同一份，13+ 那邊永遠走
+                // 上面那支，畫面完全不受影響。
+                if #available(macOS 11.0, *) {
+                    Button(action: reloadPage) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("重新整理")
+                } else {
+                    Button("重新整理", action: reloadPage)
                 }
-                .help("重新整理")
                 Spacer()
                 if let error = ocrManager.lastError {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundColor(.red)
                 }
             }
             .padding(8)
@@ -95,11 +106,11 @@ struct ContentView: View {
                 // 的記憶體/process，也不會重演同一個問題。
                 VStack(spacing: 8) {
                     Text("閒置超過作業系統時間上限")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Text("若有放置執行之工作結果已儲存至下載資料夾")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Text("請點選左上角重新整理按鍵回到系統")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let webURL {
@@ -120,10 +131,10 @@ struct ContentView: View {
             } else {
                 VStack(spacing: 8) {
                     Text("找不到內建的網頁資源")
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Text("這是打包問題，請重新安裝一次")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -164,11 +175,27 @@ struct ContentView: View {
         return (parts.first ?? 0, parts.count > 1 ? parts[1] : 0)
     }
 
+    /// 這包桌面殼屬於哪一個版本分流（跟 zh-cn-to-tw-backend 的
+    /// app_versions 表、GET /api/version_check 的 os_version 參數用同一套
+    /// 字串："13+" 是這個 target 本身、"12-" 是另一個部署目標壓到 10.15
+    /// 的 Package（Legacy/Package.swift）。LEGACY_BUILD 是那個 Package
+    /// 用 swiftSettings 定義的編譯期 flag，這個 target 自己沒有定義它，
+    /// 一律落在 #else。網頁那邊用這個值決定：要不要把 Stage 1 那塊鎖住
+    /// 只留一行字、強制更新要查哪個分流的門檻、下載要走 WKDownload 還是
+    /// legacyDownload channel（見 WebView.swift 的說明、script.js）。
+    private var osTier: String {
+        #if LEGACY_BUILD
+        return "12-"
+        #else
+        return "13+"
+        #endif
+    }
+
     /// 刻意不帶 ocrPort：那個值會隨著服務開開關關一直變，寫進網址就等於
     /// 每次變動都要重新載入頁面、清掉使用者做到一半的狀態。改成由 WebView
     /// 用 JS 推進頁面的 window.__OCR_PORT__（見 WebView.updateLivePort）。
     /// ocrToken 則是整個 App 生命週期固定的，放網址沒問題；appMajor/
-    /// appMinor 同理，整個 App 執行期間不會變。
+    /// appMinor/osTier 同理，整個 App 執行期間不會變。
     private func desktopURL(base: URL) -> URL {
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         let version = appVersionMajorMinor
@@ -178,6 +205,7 @@ struct ContentView: View {
             URLQueryItem(name: "apiBase", value: apiBase),
             URLQueryItem(name: "appMajor", value: String(version.major)),
             URLQueryItem(name: "appMinor", value: String(version.minor)),
+            URLQueryItem(name: "osTier", value: osTier),
         ]
         return components.url!
     }

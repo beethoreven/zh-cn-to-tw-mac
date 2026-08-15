@@ -1,4 +1,11 @@
 #!/bin/bash
+# 打包 macOS 13+ 那包（根目錄 Package.swift，platforms .v13）。macOS 12
+# 以下、Stage 1 鎖住只留 Stage 2 的那包是 build_app_12_minus.sh，兩支
+# 分開維護——不是同一支腳本帶參數切換，因為兩包對應的是兩個獨立的
+# SwiftPM package（Legacy/Package.swift 是另一個部署目標壓到 10.15 的
+# package，原因見那支檔案開頭的說明），swift build 呼叫的 --package-path
+# 本身就不同，共用一支腳本反而要塞一堆 if/else 分支，不如兩支各自單純。
+#
 # 把 SwiftPM 編出來的裸執行檔包成一個真正的 .app bundle（Finder/Dock 可以
 # 開的那種），順便解決裸執行檔啟動時 WKWebView 內建控制項文字（例如檔案
 # 選擇按鈕）抓不到語言偏好、退回英文的問題——這需要 Info.plist 的
