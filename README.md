@@ -64,7 +64,7 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 ### 版本管控與強制更新
 
-版控走 GitHub Releases（DMG 當附件掛上去，還沒做），版本比較邏輯只用 `CFBundleShortVersionString` 的 major/minor 兩碼，不看第三碼——`ContentView.appVersionMajorMinor` 直接用 `.` 切開字串取前兩段，拆不出兩個整數就當 `0.0`（純防禦，理論上不會發生）。`desktopURL()` 組網址時把這兩個數字用 `appMajor`/`appMinor` 帶給網頁，網頁在真的要開始 Stage 1/2 工作前打 `GET /api/version_check` 問 backend 這個版本夠不夠新，過舊就擋下操作並跳窗導去更新頁（完整流程見 `zh-cn-to-tw-web` README「桌面版的強制更新檢查」、`zh-cn-to-tw-backend` README「版本檢查」）。
+版控走 GitHub Releases（`zh-cn-to-tw-mac` repo 底下，每個版本分流各自一個 Release，DMG 當附件掛上去，見下面「打包成 .dmg」），版本比較邏輯只用 `CFBundleShortVersionString` 的 major/minor 兩碼，不看第三碼——`ContentView.appVersionMajorMinor` 直接用 `.` 切開字串取前兩段，拆不出兩個整數就當 `0.0`（純防禦，理論上不會發生）。`desktopURL()` 組網址時把這兩個數字用 `appMajor`/`appMinor` 帶給網頁，網頁在真的要開始 Stage 1/2 工作前打 `GET /api/version_check` 問 backend 這個版本夠不夠新，過舊就擋下操作並跳窗導去更新頁（完整流程見 `zh-cn-to-tw-web` README「桌面版的強制更新檢查」、`zh-cn-to-tw-backend` README「版本檢查」）。
 
 ### 版本分流：13+ 與 12-
 
@@ -91,7 +91,7 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 - Windows 版尚未開始（未來規劃跟這個殼架構相同，只是換一套 UI 框架）。
 - **刻意不做程式碼簽章／公證**：需要付費的 Apple Developer 帳號，這個專案跳過。DMG 打包已經做了（`packaging/build_dmg_13_plus.sh`/`build_dmg_12_minus.sh`），但沒有簽章代表使用者第一次打開會被 Gatekeeper 擋下來，DMG 裡附了 `dmg-readme.txt` 說明怎麼在系統設定裡允許。
-- DMG 目前只能在本機手動跑腳本產出，還沒有掛到 GitHub Releases 做版本控管（規劃中）。
+- DMG 在本機手動跑腳本產出後，手動 `gh release create`/`gh release upload` 掛到 GitHub Releases（`v<版本>-13-plus`／`v<版本>-12-minus` 這兩個 tag）——還沒接自動化 CI，每次出新版都是手動流程；下載頁（`zh-cn-to-tw-web` 的 `update-page` 分支）的連結也要跟著手動同步。Release 資產檔名刻意用 ASCII（`ZhCnToTw-<版本>-13+.dmg`／`ZhCnToTw-<版本>-12-.dmg`），不是本機習慣的中文檔名——`gh` CLI（實測 2.96.0）上傳時會把檔名開頭的 CJK 位元組吃掉，換成 ASCII 檔名完全避開這個 bug。
 - `12-` 那包還沒有在真實舊系統上實測過，見上面「版本分流」段落最後一點。
 
 ---
@@ -252,7 +252,7 @@ Completes the OAuth flow through the system browser (not a popup embedded inside
 
 ### Version Control and Forced Updates
 
-Version control goes through GitHub Releases (DMG as a release asset, not done yet). The version-comparison logic only uses the major/minor pair from `CFBundleShortVersionString`, ignoring any third digit — `ContentView.appVersionMajorMinor` just splits the string on `.` and takes the first two segments, falling back to `0.0` if that doesn't parse into two integers (pure defensiveness, shouldn't happen in practice). `desktopURL()` passes those two numbers to the page as `appMajor`/`appMinor`; before starting any Stage 1/2 work, the page calls `GET /api/version_check` to ask the backend whether this version is still new enough, and blocks the action with a dialog pointing to the update page if not (full flow in `zh-cn-to-tw-web`'s README, "Desktop Forced-Update Check," and `zh-cn-to-tw-backend`'s README, "Version Check").
+Version control goes through GitHub Releases (under the `zh-cn-to-tw-mac` repo, one Release per version tier, with the DMG as a release asset — see "Building the .dmg" below). The version-comparison logic only uses the major/minor pair from `CFBundleShortVersionString`, ignoring any third digit — `ContentView.appVersionMajorMinor` just splits the string on `.` and takes the first two segments, falling back to `0.0` if that doesn't parse into two integers (pure defensiveness, shouldn't happen in practice). `desktopURL()` passes those two numbers to the page as `appMajor`/`appMinor`; before starting any Stage 1/2 work, the page calls `GET /api/version_check` to ask the backend whether this version is still new enough, and blocks the action with a dialog pointing to the update page if not (full flow in `zh-cn-to-tw-web`'s README, "Desktop Forced-Update Check," and `zh-cn-to-tw-backend`'s README, "Version Check").
 
 ### Version Tiers: 13+ and 12-
 
@@ -279,7 +279,7 @@ Both builds currently share the **same `CFBundleIdentifier`** (`com.beethoreven.
 
 - A Windows version hasn't been started yet (planned to follow the same architecture, just with a different UI framework).
 - **Deliberately no code signing or notarization**: that needs a paid Apple Developer account, which this project skips. DMG packaging is done (`packaging/build_dmg_13_plus.sh`/`build_dmg_12_minus.sh`), but being unsigned means Gatekeeper blocks first launch; the DMG bundles a `dmg-readme.txt` explaining how to allow it in System Settings.
-- The DMG can currently only be produced by running the script locally — it isn't published to GitHub Releases for version control yet (planned).
+- The DMG is produced locally by running the script, then manually published to GitHub Releases via `gh release create`/`gh release upload` (tags `v<version>-13-plus`/`v<version>-12-minus`) — no CI automation yet, so every new version is a manual step, and the download page's links (the `update-page` branch of `zh-cn-to-tw-web`) need to be kept in sync by hand too. Release asset filenames are deliberately ASCII (`ZhCnToTw-<version>-13+.dmg`/`ZhCnToTw-<version>-12-.dmg`), not the CJK filenames used locally — the `gh` CLI (tested against 2.96.0) silently truncates the leading CJK bytes off an uploaded asset's name, and an ASCII filename sidesteps that bug entirely.
 - The `12-` build hasn't been tested on a real old system yet — see the last point under "Version Tiers" above.
 
 ---
