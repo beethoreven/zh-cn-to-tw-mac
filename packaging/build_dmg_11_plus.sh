@@ -1,8 +1,8 @@
 #!/bin/bash
-# 把 build_app_13_plus.sh 已經打包好的 .app 包成一個可以拖進 Applications
-# 安裝的 .dmg（macOS 13+ 那包）。跟 build_app_13_plus.sh 分開兩支腳本：
+# 把 build_app_11_plus.sh 已經打包好的 .app 包成一個可以拖進 Applications
+# 安裝的 .dmg（macOS 11+ 那包）。跟 build_app_11_plus.sh 分開兩支腳本：
 # 重複打包 DMG（例如只是想再測一次安裝流程）不需要每次都重新
-# swift build。macOS 12 以下那包是 build_dmg_12_minus.sh，兩支姊妹腳本，
+# swift build。macOS 10.15 那包是 build_dmg_10_15.sh，兩支姊妹腳本，
 # 差別只在 APP_BUNDLE 來源、DMG 檔名的版本分流後綴——想一次把兩包都
 # build 出來，用 build_dmg_all.sh。
 #
@@ -46,19 +46,19 @@ STAGING_DIR="$REPO_ROOT/.build/dmg-staging"
 DIST_DIR="$REPO_ROOT/dist"
 
 if [ ! -d "$APP_BUNDLE" ]; then
-  echo "找不到 $APP_BUNDLE，先跑 bash packaging/build_app_13_plus.sh $CONFIG 打包出 .app"
+  echo "找不到 $APP_BUNDLE，先跑 bash packaging/build_app_11_plus.sh $CONFIG 打包出 .app"
   exit 1
 fi
 
 # DMG 檔名帶版本號，方便同時保留好幾個版本、也方便之後掛上 GitHub
 # Releases 時一眼看出對應哪一版——直接讀 .app 裡的 Info.plist，不要
 # 手動輸入一次版本號，兩個地方各自維護遲早會兜不起來。檔名再帶一個
-# 「-13+」後綴區分版本分流（跟 build_dmg_12_minus.sh 輸出的
-# 「-12-」對應），不然兩包版本號一樣時 dist/ 底下的檔名會直接撞名、
+# 「-11+」後綴區分版本分流（跟 build_dmg_10_15.sh 輸出的
+# 「-10.15」對應），不然兩包版本號一樣時 dist/ 底下的檔名會直接撞名、
 # 後 build 的那包默默蓋掉先 build 的。
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_BUNDLE/Contents/Info.plist")"
 mkdir -p "$DIST_DIR"
-DMG_PATH="$DIST_DIR/$APP_DISPLAY_NAME-$VERSION-13+.dmg"
+DMG_PATH="$DIST_DIR/$APP_DISPLAY_NAME-$VERSION-11+.dmg"
 
 echo "==> 準備 DMG 內容（版本 $VERSION）"
 rm -rf "$STAGING_DIR"

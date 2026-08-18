@@ -84,13 +84,19 @@ struct WebView: NSViewRepresentable {
         // 網頁在 Stage 1/2 工作開始/結束時，透過這個 channel 請殼開/關
         // 系統睡眠保護（見 SystemActivityGuard 的說明）。
         contentController.add(context.coordinator, name: "activityGuard")
-        // macOS 12- 那包沒有 WKDownload（見下面 WKDownloadDelegate 那段
+        // macOS 10.15 那包沒有 WKDownload（見下面 WKDownloadDelegate 那段
         // extension 的說明，那組 API 要 11.3+），下載改靠這個 channel：
         // 網頁把檔案內容整個轉成 base64 直接 postMessage 過來，殼收到
         // 後解碼寫檔。這個 channel 本身完全沒用到任何版本限定的新 API，
-        // 兩包都註冊、都能用，只是 13+ 那包的 script.js 平常走
+        // 兩包都註冊、都能用，只是 11+ 那包的 script.js 平常走
         // WKDownload 那條路，不會用到這裡。
         contentController.add(context.coordinator, name: "legacyDownload")
+        #if LEGACY_BUILD
+        // 10.15 那包 Stage 1 的 OCR 走這個 channel（VisionOCRManager 原生
+        // 實作），不是 11+ 那包用的 HTTP 輪詢——見 VisionOCRManager.swift
+        // 開頭的說明。只在這個 target 註冊，11+ 那包沒有這個 channel。
+        contentController.add(context.coordinator, name: "visionOcr")
+        #endif
         configuration.userContentController = contentController
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -120,7 +126,7 @@ struct WebView: NSViewRepresentable {
 
     // WKDownloadDelegate 本身（連同 WKDownload 這個型別）要 macOS 11.3+
     // 才有——見下面那段 extension 的說明。這個 class 的宣告本身刻意不列
-    // WKDownloadDelegate，讓這份原始碼在 12- 那包（部署目標 10.15）也能
+    // WKDownloadDelegate，讓這份原始碼在 10.15 那包（部署目標 10.15）也能
     // 編譯過；相關方法全部搬到下面用 @available 包起來的 extension 裡。
     final class Coordinator: NSObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
         private let onStartOCRService: () -> Void
@@ -146,6 +152,9 @@ struct WebView: NSViewRepresentable {
         private var lastURL: URL?
         private var lastReloadToken: UUID?
         private var sleepObserver: NSObjectProtocol?
+        #if LEGACY_BUILD
+        private let visionOCRManager = VisionOCRManager()
+        #endif
 
         deinit {
             if let sleepObserver {
@@ -293,12 +302,16 @@ struct WebView: NSViewRepresentable {
                 }
             case "legacyDownload":
                 handleLegacyDownload(message.body, webView: message.webView)
+            #if LEGACY_BUILD
+            case "visionOcr":
+                handleVisionOcr(message.body, webView: message.webView)
+            #endif
             default:
                 print("[webview-console] \(message.body)")
             }
         }
 
-        // macOS 12- 那包沒有 WKDownload（要 11.3+，見下面 extension 的
+        // macOS 10.15 那包沒有 WKDownload（要 11.3+，見下面 extension 的
         // 說明），下載改靠這個 channel：網頁把整份檔案內容轉成 base64
         // 直接 postMessage 過來，這裡解碼寫檔——不需要用到任何版本限定
         // 的新 WebKit API，純粹是 WKScriptMessageHandler（很舊、兩包都
@@ -330,6 +343,53 @@ struct WebView: NSViewRepresentable {
                 webView?.evaluateJavaScript("showToast('\(message)', 'error')")
             }
         }
+
+        #if LEGACY_BUILD
+        // 10.15 那包 Stage 1 的本機 OCR 入口——網頁把 PDF 轉成 base64 直接
+        // postMessage 過來（見 zh-cn-to-tw-web 的 script.js，DESKTOP_OS_TIER
+        // === "10.15" 那個分支），這裡解碼、丟給 VisionOCRManager 處理，
+        // 進度/結果透過 evaluateJavaScript 呼叫網頁的
+        // window.__visionOcrProgress(jobId, payload) 推播回去——跟
+        // zh-cn-to-tw-ocr-service 那條 HTTP 輪詢路徑回傳的 job 狀態欄位
+        // 形狀刻意對齊，網頁那邊可以共用同一套進度顯示邏輯（見
+        // VisionOCRManager.swift 開頭的說明）。
+        private func handleVisionOcr(_ body: Any, webView: WKWebView?) {
+            guard let dict = body as? [String: Any],
+                  let jobId = dict["jobId"] as? String,
+                  let pdfBase64 = dict["pdfBase64"] as? String,
+                  let pdfData = Data(base64Encoded: pdfBase64)
+            else {
+                print("[webview-vision-ocr] 收到的訊息格式不對：\(body)")
+                return
+            }
+            let dpi = (dict["dpi"] as? Int) ?? 200
+            let detectCover = (dict["detectCover"] as? Bool) ?? true
+
+            visionOCRManager.startJob(pdfData: pdfData, dpi: dpi, detectCover: detectCover) { [weak webView] update in
+                // jobId 直接塞進同一個 payload 一起序列化，不要另外手動組
+                // JS 字串字面值——JSONSerialization 已經處理好跳脫，比自己
+                // 手動處理特殊字元（引號、換行）可靠。
+                var payload = update
+                payload["jobId"] = jobId
+                DispatchQueue.main.async {
+                    guard
+                        let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+                        let payloadJSON = String(data: payloadData, encoding: .utf8)
+                    else {
+                        print("[webview-vision-ocr] 進度資料無法序列化：\(payload)")
+                        return
+                    }
+                    webView?.evaluateJavaScript(
+                        "window.__visionOcrProgress && window.__visionOcrProgress(\(payloadJSON));"
+                    ) { _, error in
+                        if let error {
+                            print("[webview-vision-ocr] 推播進度失敗：\(error)")
+                        }
+                    }
+                }
+            }
+        }
+        #endif
 
         private func startDesktopSignIn(for webView: WKWebView?) {
             guard let webView else { return }
@@ -522,7 +582,7 @@ struct WebView: NSViewRepresentable {
         ) {
             // shouldPerformDownload 跟 .download 這個 case 本身都要
             // macOS 11.3+（見下面 WKDownloadDelegate extension 的說明）。
-            // 12- 那包的 script.js 已經改用 legacyDownload channel，不會
+            // 10.15 那包的 script.js 已經改用 legacyDownload channel，不會
             // 走到這條 blob: 導覽被攔下來要求下載的路，這裡的
             // #available 純粹是讓程式碼在低於 11.3 的部署目標下也能編譯，
             // 不是期待它在舊系統上真的被觸發。
@@ -612,9 +672,9 @@ struct WebView: NSViewRepresentable {
 }
 
 // WKDownload/WKDownloadDelegate 整組 API（連同 WKNavigationActionPolicy
-// 的 .download case）都是 macOS 11.3+ 才有——13+ 那包沒問題，但 12- 那包
+// 的 .download case）都是 macOS 11.3+ 才有——11+ 那包沒問題，但 10.15 那包
 // 部署目標壓到 10.15，這個 extension 對它來說整段都不存在，同一份原始碼
-// 才能同時餵給兩個 Package.swift。12- 那包的下載改走 legacyDownload
+// 才能同時餵給兩個 Package.swift。10.15 那包的下載改走 legacyDownload
 // channel（見上面 Coordinator 的 handleLegacyDownload），完全不需要
 // WKDownload。
 @available(macOS 11.3, *)

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ZhCnToTw",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v11)],
     targets: [
         .executableTarget(
             name: "ZhCnToTw",

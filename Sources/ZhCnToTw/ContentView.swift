@@ -75,11 +75,11 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                // Image(systemName:) 跟 .help() 都要 macOS 11.0+（12- 那包
+                // Image(systemName:) 跟 .help() 都要 macOS 11.0+（10.15 那包
                 // 部署目標是 10.15，實測 swift build 直接報「'help' is only
                 // available in macOS 11.0 or newer」）。這裡分兩支：11.0+
                 // 用原本的圖示按鈕，以下退回純文字按鈕——這個檔案是符號
-                // 連結，13+ 跟 12- 兩個 target 共用同一份，13+ 那邊永遠走
+                // 連結，11+ 跟 10.15 兩個 target 共用同一份，11+ 那邊永遠走
                 // 上面那支，畫面完全不受影響。
                 if #available(macOS 11.0, *) {
                     Button(action: reloadPage) {
@@ -177,17 +177,19 @@ struct ContentView: View {
 
     /// 這包桌面殼屬於哪一個版本分流（跟 zh-cn-to-tw-backend 的
     /// app_versions 表、GET /api/version_check 的 os_version 參數用同一套
-    /// 字串："13+" 是這個 target 本身、"12-" 是另一個部署目標壓到 10.15
-    /// 的 Package（Legacy/Package.swift）。LEGACY_BUILD 是那個 Package
-    /// 用 swiftSettings 定義的編譯期 flag，這個 target 自己沒有定義它，
-    /// 一律落在 #else。網頁那邊用這個值決定：要不要把 Stage 1 那塊鎖住
-    /// 只留一行字、強制更新要查哪個分流的門檻、下載要走 WKDownload 還是
-    /// legacyDownload channel（見 WebView.swift 的說明、script.js）。
+    /// 字串："11+" 是這個 target 本身（部署目標 macOS 11.0，見
+    /// Package.swift）、"10.15" 是另一個部署目標壓到 10.15 的 Package
+    /// （Legacy/Package.swift）。LEGACY_BUILD 是那個 Package 用
+    /// swiftSettings 定義的編譯期 flag，這個 target 自己沒有定義它，
+    /// 一律落在 #else。網頁那邊用這個值決定：強制更新要查哪個分流的
+    /// 門檻、下載要走 WKDownload 還是 legacyDownload channel、本機 OCR
+    /// 要走 HTTP 輪詢（ocr-service）還是 visionOcr message channel
+    /// （見 WebView.swift 的說明、script.js）。
     private var osTier: String {
         #if LEGACY_BUILD
-        return "12-"
+        return "10.15"
         #else
-        return "13+"
+        return "11+"
         #endif
     }
 
