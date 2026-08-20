@@ -66,5 +66,21 @@ else
   echo "    找不到 $WEB_SRC_DIR，這次不內嵌網頁前端（App 會開不起來）"
 fi
 
+# swift build 產出的裸執行檔本身已經帶一個 ad-hoc 簽章（Apple Silicon
+# 上執行任何東西都要求至少有簽章），但那個簽章是對「裸執行檔自己」
+# 簽的，Sealed Resources=none。把它原封不動 cp 進 .app bundle、旁邊
+# 多出 Info.plist/AppIcon.icns/web/ 這些資源後，簽章跟實際內容對不
+# 起來——`codesign -dv` 會報「code has no resources but signature
+# indicates they must be present」。本機直接 `open` 測試時，Gatekeeper
+# 不太會認真檢查這個（實測撞過：一直沒發現），但只要檔案真的被下載
+# 過一次（瀏覽器會加 com.apple.quarantine），系統會做 App
+# Translocation 到唯讀的隨機路徑再檢查，這時候簽章不合格就直接判定
+#「已損毀，無法打開」，連 Gatekeeper 的「仍要打開」選項都不會出現
+# ——不是使用者操作有問題，是這個簽章根本無效。修法是整個 .app
+# 組裝完之後重新簽一次（ad-hoc，不需要花錢的開發者憑證），讓簽章
+# 涵蓋這次真正打包進去的所有內容。
+echo "==> 重新簽章（ad-hoc，涵蓋組裝完的完整 bundle）"
+codesign --force --deep --sign - "$APP_BUNDLE"
+
 echo "==> 完成：$APP_BUNDLE"
 echo "    開啟方式：open \"$APP_BUNDLE\""
