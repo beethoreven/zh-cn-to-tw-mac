@@ -126,7 +126,7 @@ final class OCRServiceManager: ObservableObject {
                 self.lastError = "本機 OCR 服務啟動逾時，正在重試（\(self.startupAttempt)/\(Self.maxStartupAttempts)）"
                 self.start()
             } else {
-                self.lastError = "本機 OCR 服務啟動逾時，已重試 \(Self.maxStartupAttempts) 次仍失敗，請按重新整理再試一次"
+                self.lastError = "本機 OCR 服務啟動逾時，已重試 \(Self.maxStartupAttempts) 次仍失敗，請再按一次「上傳並開始繁化」重試"
             }
         }
         startupTimeoutWorkItem = workItem
@@ -148,13 +148,10 @@ final class OCRServiceManager: ObservableObject {
             process = nil
             port = nil
         }
-        start()
-    }
-
-    /// 讓使用者可以手動重新觸發啟動流程（例如按重新整理），不受
-    /// maxStartupAttempts 已經用完的限制——那個上限是防止自動重試無止盡
-    /// 空轉，不是要擋住使用者自己主動要求再試一次。
-    func retryStart() {
+        // 這裡唯一的呼叫者是網頁按下「上傳並開始繁化」，每次都是使用者主動
+        // 發起的新嘗試，重試計數要從頭算。maxStartupAttempts 是擋自動重試
+        // 無止盡空轉用的，不歸零的話，前幾次失敗用完額度之後，之後每一次
+        // 使用者重按都只剩一次機會、不會再自動重試。
         startupAttempt = 0
         lastError = nil
         start()

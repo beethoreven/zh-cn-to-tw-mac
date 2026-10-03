@@ -22,10 +22,6 @@ import AppKit
 /// 從哪裡來」不同（HTTP 輪詢 vs. message channel 推播），不用為了這個
 /// 分流重寫一套畫面邏輯。
 final class VisionOCRManager {
-    struct JobError: Error {
-        let message: String
-    }
-
     /// 跟 ocr_utils/cover_detect.py 的門檻值對齊（zh-cn-to-tw-ocr-service
     /// 的 configs/config.py 預設值），不要自己另外訂一套，不然同一份
     /// PDF 在兩個分流上可能得出不一致的封面判定。
@@ -50,6 +46,7 @@ final class VisionOCRManager {
         pdfData: Data,
         dpi: Int,
         detectCover: Bool,
+        splitLeftRight: Bool,
         onUpdate: @escaping ([String: Any]) -> Void
     ) {
         workQueue.async {
@@ -105,15 +102,25 @@ final class VisionOCRManager {
                 }
             }
 
+            // 刻意排在封面偵測之後：封面偵測比對的是原始的第 1、2 張，要先決定
+            // 整張封面拿不拿掉，剩下的才切成左右兩頁。跟
+            // zh-cn-to-tw-ocr-service/app.py 的 _run_local_ocr_job 順序一致。
+            var ocrImages = Array(pageImages[startIndex...])
+            if splitLeftRight {
+                log("「切割左右頁格式」已開啟，\(totalPages) 張將切割成 \(totalPages * 2) 頁")
+                ocrImages = ocrImages.flatMap { Self.splitLeftRight($0) }
+                totalPages = ocrImages.count
+            }
+
             onUpdate(["phase": "ocr", "status": "running", "logs": logs, "totalPages": totalPages, "currentPage": 0])
 
             var pages: [String] = []
-            for offset in startIndex..<pageImages.count {
+            for (index, image) in ocrImages.enumerated() {
                 do {
-                    let text = try Self.recognizeText(in: pageImages[offset])
+                    let text = try Self.recognizeText(in: image)
                     pages.append(text)
                 } catch {
-                    onUpdate(["status": "failed", "error": "OCR 處理失敗（第 \(offset - startIndex + 1) 頁）：\(error)"])
+                    onUpdate(["status": "failed", "error": "OCR 處理失敗（第 \(index + 1) 頁）：\(error)"])
                     return
                 }
                 onUpdate([
@@ -124,6 +131,19 @@ final class VisionOCRManager {
 
             onUpdate(["status": "done", "logs": logs, "pages": pages])
         }
+    }
+
+    // MARK: - 切割左右頁
+
+    /// 從正中間切開，回傳 [左半, 右半]——左頁是前一頁、右頁是後一頁。跟
+    /// zh-cn-to-tw-ocr-service/ocr_utils/pdf_to_images.py 的
+    /// split_left_right_pages 切法一致（奇數寬度時多出來那一欄歸右半）。
+    /// cropping(to:) 跟原圖共用底層像素資料，不會多複製一份記憶體。
+    private static func splitLeftRight(_ image: CGImage) -> [CGImage] {
+        let mid = image.width / 2
+        let left = CGRect(x: 0, y: 0, width: mid, height: image.height)
+        let right = CGRect(x: mid, y: 0, width: image.width - mid, height: image.height)
+        return [left, right].compactMap { image.cropping(to: $0) }
     }
 
     // MARK: - 封面偵測

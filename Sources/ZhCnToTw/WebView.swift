@@ -364,8 +364,11 @@ struct WebView: NSViewRepresentable {
             }
             let dpi = (dict["dpi"] as? Int) ?? 200
             let detectCover = (dict["detectCover"] as? Bool) ?? true
+            let splitLeftRight = (dict["splitLeftRight"] as? Bool) ?? false
 
-            visionOCRManager.startJob(pdfData: pdfData, dpi: dpi, detectCover: detectCover) { [weak webView] update in
+            visionOCRManager.startJob(
+                pdfData: pdfData, dpi: dpi, detectCover: detectCover, splitLeftRight: splitLeftRight
+            ) { [weak webView] update in
                 // jobId 直接塞進同一個 payload 一起序列化，不要另外手動組
                 // JS 字串字面值——JSONSerialization 已經處理好跳脫，比自己
                 // 手動處理特殊字元（引號、換行）可靠。
