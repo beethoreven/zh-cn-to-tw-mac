@@ -46,7 +46,7 @@ APP_BUNDLE="$REPO_ROOT/.build/$APP_DISPLAY_NAME.app"
 # onedir 產出；可用環境變數覆蓋，方便之後在別台機器上打包。
 OCR_SERVICE_DIST_DIR="${OCR_SERVICE_DIST_DIR:-$REPO_ROOT/../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service}"
 
-# 網頁前端原始檔，直接包進 Resources/web/，App 用 file:// 載入（見
+# 網頁前端原始檔，直接包進 Resources/web/，App 用自訂 scheme zhcntotw://app 載入（見
 # ContentView.swift 的說明）。刻意不再透過本機 backend 用 HTTP 供應——
 # backend 的 port 每次啟動都不一樣，會讓 localStorage 的 origin 跟著變、
 # 存在裡面的登入 session 因此每次啟動都救不回來（實測撞過這個問題）。
@@ -82,9 +82,15 @@ if [ -d "$WEB_SRC_DIR" ]; then
   # 只複製網頁真正需要的檔案，不要把整個 repo（.git、README 之類）塞進去。
   # 不複製 ta-notice.txt——它現在放在 zh-cn-to-tw-backend repo 裡，
   # 桌面版跟瀏覽器版一樣，改成執行期打 Render 的 /api/ta-notice
-  # 拿內容（見 script.js 的 initTaNotice() 說明），打包時不用管它。
-  for f in index.html script.js style.css favicon.png; do
-    [ -f "$WEB_SRC_DIR/$f" ] && cp "$WEB_SRC_DIR/$f" "$APP_BUNDLE/Contents/Resources/web/$f"
+  # 拿內容（見 js/app/ta-notice.js 的 initTaNotice() 說明），打包時不用管它。
+  # 2.0 前端是 index.html + assets/、css/、js/ 三個資料夾（ES module）。
+  # 少任何一個 App 都會整頁空白，所以缺了直接中止打包，不要靜靜略過。
+  # 1.x 的 script.js／style.css／favicon.png 在 2.0 已經不存在。
+  [ -f "$WEB_SRC_DIR/index.html" ] || { echo "    $WEB_SRC_DIR 缺 index.html"; exit 1; }
+  cp "$WEB_SRC_DIR/index.html" "$APP_BUNDLE/Contents/Resources/web/index.html"
+  for d in assets css js; do
+    [ -d "$WEB_SRC_DIR/$d" ] || { echo "    $WEB_SRC_DIR 缺 $d/（不是 2.0 前端？）"; exit 1; }
+    cp -R "$WEB_SRC_DIR/$d" "$APP_BUNDLE/Contents/Resources/web/$d"
   done
   echo "    已內嵌網頁前端：$WEB_SRC_DIR"
 else

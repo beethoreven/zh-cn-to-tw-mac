@@ -39,7 +39,7 @@ APP_DISPLAY_NAME="繁化助手"
 # 目錄下，不會互相覆蓋。
 APP_BUNDLE="$PACKAGE_PATH/.build/$APP_DISPLAY_NAME.app"
 
-# 網頁前端原始檔，直接包進 Resources/web/，App 用 file:// 載入——
+# 網頁前端原始檔，直接包進 Resources/web/，App 用自訂 scheme zhcntotw://app 載入——
 # 跟 11+ 那包完全同一份網頁（見 build_app_11_plus.sh 同一段說明），
 # 網頁那邊自己會用桌面殼傳進來的 osTier 決定本機 OCR 要走 HTTP 輪詢
 # 還是 visionOcr message channel。
@@ -58,8 +58,14 @@ cp "$REPO_ROOT/packaging/Info-10-15.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$REPO_ROOT/packaging/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 if [ -d "$WEB_SRC_DIR" ]; then
-  for f in index.html script.js style.css favicon.png; do
-    [ -f "$WEB_SRC_DIR/$f" ] && cp "$WEB_SRC_DIR/$f" "$APP_BUNDLE/Contents/Resources/web/$f"
+  # 2.0 前端是 index.html + assets/、css/、js/ 三個資料夾（ES module）。
+  # 少任何一個 App 都會整頁空白，所以缺了直接中止打包，不要靜靜略過。
+  # 1.x 的 script.js／style.css／favicon.png 在 2.0 已經不存在。
+  [ -f "$WEB_SRC_DIR/index.html" ] || { echo "    $WEB_SRC_DIR 缺 index.html"; exit 1; }
+  cp "$WEB_SRC_DIR/index.html" "$APP_BUNDLE/Contents/Resources/web/index.html"
+  for d in assets css js; do
+    [ -d "$WEB_SRC_DIR/$d" ] || { echo "    $WEB_SRC_DIR 缺 $d/（不是 2.0 前端？）"; exit 1; }
+    cp -R "$WEB_SRC_DIR/$d" "$APP_BUNDLE/Contents/Resources/web/$d"
   done
   echo "    已內嵌網頁前端：$WEB_SRC_DIR"
 else
