@@ -1,6 +1,83 @@
 import SwiftUI
 import WebKit
 
+/// 用自訂 scheme zhcntotw://app/ 供應包在 .app 裡的網頁（Resources/web/），
+/// 取代 file://。
+///
+/// 為什麼不能再用 file://：2.0 前端是 ES module（<script type="module">），
+/// module script 一律走 CORS，而 file:// 頁面的 Origin 是字面上的 "null"，
+/// 全部會被擋下，整頁載入了但什麼都沒有。自訂 scheme 同樣是固定的 origin
+/// （localStorage 的登入 session 才能跨次啟動保留），又是有正常來源的網址。
+///
+/// 放在 WebView.swift 而不是獨立檔案：Legacy/ 底下是逐檔建立的符號連結，
+/// 多一個檔案就要多補一條，漏補 10.15 那包會編不過。
+///
+/// 刻意不用 UniformTypeIdentifiers 查 MIME：那是 macOS 11 才有，10.15 那包
+/// 編不過。module script 一定要是 JavaScript 的 MIME type，否則 WebKit 會
+/// 直接拒絕執行。
+final class WebAssetSchemeHandler: NSObject, WKURLSchemeHandler {
+    static let scheme = "zhcntotw"
+    static let host = "app"
+
+    // 沿用 ContentView 用 bundlePath 純字串組路徑的做法（見那邊的註解）。
+    private let root = URL(fileURLWithPath: (Bundle.main.bundlePath as NSString)
+        .appendingPathComponent("Contents/Resources/web")).standardizedFileURL
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url, url.host == Self.host else {
+            respond(urlSchemeTask, status: 404, data: Data(), mime: "text/plain; charset=utf-8")
+            return
+        }
+        // url.path 已經解碼、而且不含 ?desktop=1&... 這些查詢參數
+        var path = url.path
+        if path.isEmpty || path == "/" { path = "/index.html" }
+        let fileURL = root.appendingPathComponent(String(path.dropFirst())).standardizedFileURL
+        // 只供應 web/ 底下的檔案，擋掉 ../ 之類跑出去的路徑
+        guard fileURL.path.hasPrefix(root.path + "/"),
+              let data = try? Data(contentsOf: fileURL) else {
+            print("[web-scheme] 找不到：\(url.absoluteString)")
+            respond(urlSchemeTask, status: 404, data: Data(), mime: "text/plain; charset=utf-8")
+            return
+        }
+        respond(urlSchemeTask, status: 200, data: data, mime: Self.mimeType(for: fileURL.pathExtension))
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        // start 裡是同步讀檔、同步送完，不會有 stop 之後還在送的情況。
+        // 之後如果改成非同步：stop 之後絕對不能再呼叫這個 task 的
+        // didReceive/didFinish，WebKit 會丟 NSInternalInconsistencyException
+        // 讓 App 當掉。
+    }
+
+    private func respond(_ task: WKURLSchemeTask, status: Int, data: Data, mime: String) {
+        let url = task.request.url ?? URL(string: "\(Self.scheme)://\(Self.host)/")!
+        let headers = [
+            "Content-Type": mime,
+            "Content-Length": String(data.count),
+            "Cache-Control": "no-cache",
+        ]
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
+    }
+
+    static func mimeType(for ext: String) -> String {
+        switch ext.lowercased() {
+        case "html", "htm": return "text/html; charset=utf-8"
+        case "js", "mjs": return "text/javascript; charset=utf-8"
+        case "css": return "text/css; charset=utf-8"
+        case "json": return "application/json; charset=utf-8"
+        case "txt": return "text/plain; charset=utf-8"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "svg": return "image/svg+xml"
+        case "ico": return "image/x-icon"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
 /// 包一層 WKWebView，避免 reloadToken/url 沒真的變也重新 load 一次
 /// （SwiftUI 狀態變化會頻繁重新呼叫 updateNSView）。
 struct WebView: NSViewRepresentable {
@@ -98,6 +175,8 @@ struct WebView: NSViewRepresentable {
         contentController.add(context.coordinator, name: "visionOcr")
         #endif
         configuration.userContentController = contentController
+        // 一定要在建立 WKWebView 之前註冊，之後才註冊無效。
+        configuration.setURLSchemeHandler(WebAssetSchemeHandler(), forURLScheme: WebAssetSchemeHandler.scheme)
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
 

@@ -15,8 +15,15 @@ struct ContentView: View {
     // 重新整理才重新建立一個全新的 WebView。
     @State private var webContentProcessDied = false
 
-    // 網頁前端整份包在 .app 裡（Resources/web/），用固定的 file:// 路徑
-    // 直接載入，不再透過本機 backend 用 HTTP 供應。
+    // 網頁前端整份包在 .app 裡（Resources/web/），用固定的自訂 scheme
+    // zhcntotw://app/ 載入（WebView.swift 的 WebAssetSchemeHandler 供應），
+    // 不再透過本機 backend 用 HTTP 供應。
+    //
+    // 2.0 起從 file:// 換成自訂 scheme：2.0 前端是 ES module，file:// 頁面
+    // 的 Origin 是 "null"，module script 會被 CORS 全部擋下、整頁空白。
+    // 下面這段「為什麼不是本機 HTTP server」的理由仍然成立，只是固定 origin
+    // 的載體從 file:// 路徑變成自訂 scheme；origin 換了，從 1.x 升上來的
+    // 使用者要重新登入一次，之後改版來源不變。
     //
     // 這是刻意改過的：原本用本機 backend 供應網頁時，backend 的監聽 port
     // 是每次啟動隨機配的（避免舊 process 卡住固定 port，這個專案本機測試
@@ -40,22 +47,11 @@ struct ContentView: View {
            let url = URL(string: override) {
             return url
         }
-        // 用 bundlePath（純字串）手動組路徑，不要用 Bundle.main.resourceURL
-        // 這個 URL 物件去 appendingPathComponent。實測抓到：在這個環境下
-        // Bundle.main.resourceURL 回傳的 URL 內部是「相對字串 + baseURL」
-        // 的組合形式，不是單純的絕對路徑；這種 URL 表面上看起來正常
-        // （isFileURL 也回報 true），但只要經過 URLComponents(url:
-        // resolvingAgainstBaseURL: false) 這種明確不解析 baseURL 的操作
-        // （desktopURL() 為了組 ?desktop=1&ocrPort=... 這些查詢參數會這樣
-        // 做），那個 baseURL 就會被整個弄丟，只剩下相對的那一段字串，
-        // 變成完全沒有 file:// scheme 的路徑，WKWebView 會直接回報
-        // 「無法顯示URL」（WebKitErrorDomain code 101），而且從表面上
-        // 看不出問題出在 URL 本身格式不對。用 bundlePath 這個純字串手動
-        // 組、再用 URL(fileURLWithPath:) 建構，從源頭就是真正的絕對路徑，
-        // 沒有「相對+base」這種模稜兩可的中間狀態可以被弄丟。
-        let indexPath = (Bundle.main.bundlePath as NSString)
-            .appendingPathComponent("Contents/Resources/web/index.html")
-        return URL(fileURLWithPath: indexPath)
+        // 檔案實際位置由 WebAssetSchemeHandler 用 bundlePath 純字串組出來
+        // （不要用 Bundle.main.resourceURL：實測它回傳「相對字串 + baseURL」
+        // 的組合，經過 URLComponents 後 baseURL 會被弄丟、WKWebView 回報
+        // 「無法顯示URL」）。這裡只需要一個固定的網址。
+        return URL(string: "\(WebAssetSchemeHandler.scheme)://\(WebAssetSchemeHandler.host)/index.html")
     }
 
     // 單純重新載入網頁。刻意不在這裡碰 OCR 服務：它是「用到才開、用完就
@@ -209,6 +205,12 @@ struct ContentView: View {
             URLQueryItem(name: "appMinor", value: String(version.minor)),
             URLQueryItem(name: "osTier", value: osTier),
         ]
+        // URLComponents 不會把 query 裡的 "+" 編碼（"+" 在 query 裡是合法字元），
+        // 但前端用 URLSearchParams 讀，"+" 會被解讀成空白，osTier=11+ 變成
+        // "11 "，後端查不到門檻、強制更新對 Mac 11+ 一律不生效。手動編成 %2B
+        // （Windows 殼用 Uri.EscapeDataString，本來就會編）。
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
         return components.url!
     }
 }
