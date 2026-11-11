@@ -13,8 +13,8 @@ import SwiftUI
 // AppDelegate 本體（applicationShouldTerminateAfterLastWindowClosed/
 // applicationWillTerminate 的邏輯）刻意跟 11+ 那份幾乎一字不差抄過來，
 // 不是各自維護一份。這個 target 不內嵌 ocr-service——Stage 1 改用
-// VisionOCRManager 原生實作（見 ContentView.swift 的 osTier、
-// VisionOCRManager.swift 開頭的說明），完全不需要那支 Python service。
+// App 內嵌的 Tesseract（見 ContentView.swift 的 osTier、
+// TesseractOCRManager.swift 開頭的說明），完全不需要那支 Python service。
 // ContentView.swift（symlink 共用）仍然要求注入一個 OCRServiceManager
 // 型別的 @EnvironmentObject，這裡繼續建立一個實例是為了滿足這個型別
 // 需求，不是真的要用它——resolveOCRServiceExecutable() 找不到執行檔時
@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // stdout 接到管線/檔案時無緩衝——原因跟 11+ 那份 App.swift 一樣，
         // 見那邊的說明。
         setvbuf(stdout, nil, _IONBF, 0)
+        Self.redirectOutputToLogFileIfNeeded()
 
         NSApp.setActivationPolicy(.regular)
         buildMainMenu()
@@ -135,6 +136,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // OCRServiceManager 只有真的呼叫 start() 才會嘗試用這個路徑啟動
     // subprocess，而這個 target 永遠不會呼叫（見上面的說明），找不到
     // 執行檔本身完全不影響任何實際功能，不需要 fatalError。
+    /// 從 Finder／Dock 打開時 stdout、stderr 沒有接到任何地方，所有 print()
+    /// （WebView 載入失敗、網頁 console 轉送、OCR 每一頁的耗時與錯誤）都
+    /// 直接消失，也不會出現在 Console.app。10.15 這包的使用者手邊沒有
+    /// 開發環境，出問題時只能請對方傳檔案，所以把輸出接到
+    /// ~/Library/Logs/ZhCnToTw/app.log（Finder「前往」→「資料庫」→
+    /// Logs 就找得到）。從終端機直接執行時維持印在終端機上，方便開發。
+    /// 檔案超過 5 MB 就把舊的改名成 app.log.1，只留一份舊檔。
+    private static func redirectOutputToLogFileIfNeeded() {
+        guard isatty(STDOUT_FILENO) == 0 else { return }
+        let fileManager = FileManager.default
+        guard let library = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+        let dir = library.appendingPathComponent("Logs/ZhCnToTw", isDirectory: true)
+        let logFile = dir.appendingPathComponent("app.log")
+        do {
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let size = (try? fileManager.attributesOfItem(atPath: logFile.path))?[.size] as? NSNumber,
+               size.intValue > 5 * 1024 * 1024 {
+                let old = dir.appendingPathComponent("app.log.1")
+                try? fileManager.removeItem(at: old)
+                try fileManager.moveItem(at: logFile, to: old)
+            }
+        } catch {
+            return
+        }
+        guard freopen(logFile.path, "a", stdout) != nil else { return }
+        setvbuf(stdout, nil, _IONBF, 0)
+        dup2(STDOUT_FILENO, STDERR_FILENO)
+
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        print("\n===== \(ISO8601DateFormatter().string(from: Date())) 啟動 繁化助手 \(version)（\(build)，10.15 分流），\(os) =====")
+    }
+
     private static func resolveOCRServiceExecutable() -> URL {
         if let devPath = ProcessInfo.processInfo.environment["OCR_SERVICE_DEV_PATH"] {
             return URL(fileURLWithPath: devPath)

@@ -169,9 +169,11 @@ struct WebView: NSViewRepresentable {
         // WKDownload 那條路，不會用到這裡。
         contentController.add(context.coordinator, name: "legacyDownload")
         #if LEGACY_BUILD
-        // 10.15 那包 Stage 1 的 OCR 走這個 channel（VisionOCRManager 原生
-        // 實作），不是 11+ 那包用的 HTTP 輪詢——見 VisionOCRManager.swift
-        // 開頭的說明。只在這個 target 註冊，11+ 那包沒有這個 channel。
+        // 10.15 那包 Stage 1 的 OCR 走這個 channel（TesseractOCRManager，
+        // 呼叫 App 內嵌的 Tesseract），不是 11+ 那包用的 HTTP 輪詢——見
+        // TesseractOCRManager.swift 開頭的說明。名字裡的 vision 是當初用
+        // Apple Vision framework 時留下的，前端用同一個名字，要改得兩邊
+        // 一起改。只在這個 target 註冊，11+ 那包沒有這個 channel。
         contentController.add(context.coordinator, name: "visionOcr")
         #endif
         configuration.userContentController = contentController
@@ -232,7 +234,7 @@ struct WebView: NSViewRepresentable {
         private var lastReloadToken: UUID?
         private var sleepObserver: NSObjectProtocol?
         #if LEGACY_BUILD
-        private let visionOCRManager = VisionOCRManager()
+        private let localOCRManager = TesseractOCRManager()
         #endif
 
         deinit {
@@ -425,13 +427,13 @@ struct WebView: NSViewRepresentable {
 
         #if LEGACY_BUILD
         // 10.15 那包 Stage 1 的本機 OCR 入口——網頁把 PDF 轉成 base64 直接
-        // postMessage 過來（見 zh-cn-to-tw-web 的 script.js，DESKTOP_OS_TIER
-        // === "10.15" 那個分支），這裡解碼、丟給 VisionOCRManager 處理，
+        // postMessage 過來（見 zh-cn-to-tw-web 的 js/stages/ocr.js 的
+        // runVisionOcrJob），這裡解碼、丟給 TesseractOCRManager 處理，
         // 進度/結果透過 evaluateJavaScript 呼叫網頁的
         // window.__visionOcrProgress(jobId, payload) 推播回去——跟
         // zh-cn-to-tw-ocr-service 那條 HTTP 輪詢路徑回傳的 job 狀態欄位
         // 形狀刻意對齊，網頁那邊可以共用同一套進度顯示邏輯（見
-        // VisionOCRManager.swift 開頭的說明）。
+        // TesseractOCRManager.swift 開頭的說明）。
         private func handleVisionOcr(_ body: Any, webView: WKWebView?) {
             guard let dict = body as? [String: Any],
                   let jobId = dict["jobId"] as? String,
@@ -445,7 +447,7 @@ struct WebView: NSViewRepresentable {
             let detectCover = (dict["detectCover"] as? Bool) ?? true
             let splitLeftRight = (dict["splitLeftRight"] as? Bool) ?? false
 
-            visionOCRManager.startJob(
+            localOCRManager.startJob(
                 pdfData: pdfData, dpi: dpi, detectCover: detectCover, splitLeftRight: splitLeftRight
             ) { [weak webView] update in
                 // jobId 直接塞進同一個 payload 一起序列化，不要另外手動組
@@ -496,8 +498,18 @@ struct WebView: NSViewRepresentable {
                     NSApp.activate(ignoringOtherApps: true)
                 case .failure(let error):
                     print("[desktop-signin] 失敗：\(error)")
+                    // 一定要通知網頁、不能只跳 alert：網頁如果是因為工作途中
+                    // 登入過期才請殼登入，它正卡在「等重新登入」，只有殼回報
+                    // 結果才出得來（見網頁 js/core/api.js 的
+                    // handleDesktopSignInFailed）。用 JSON 陣列包一層產生 JS
+                    // 字串字面值，錯誤訊息裡有引號也不會弄壞這段 JS。
+                    let reason = String(describing: error)
+                    let literal = (try? JSONSerialization.data(withJSONObject: [reason]))
+                        .flatMap { String(data: $0, encoding: .utf8) }
+                        .map { String($0.dropFirst().dropLast()) } ?? "\"\""
                     webView.evaluateJavaScript(
-                        "window.alert && window.alert('登入失敗，請重試（\(String(describing: error))）')"
+                        "window.__desktopSignInFailed ? window.__desktopSignInFailed(\(literal))"
+                            + " : (window.alert && window.alert('登入失敗，請重試（' + \(literal) + '）'))"
                     )
                 }
             }

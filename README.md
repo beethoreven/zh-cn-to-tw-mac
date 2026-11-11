@@ -68,12 +68,12 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 ### 版本分流：11+ 與 10.15
 
-一開始整支 App 用同一個 `Package.swift`（`platforms: [.macOS(.v13)]`），`LSMinimumSystemVersion` 也寫死 `13.0`。後來查證發現這個 `13.0` 門檻是當初隨手選的保守值，翻遍程式碼找不到任何一行真的需要 13.0 的 API（SwiftUI 的 `App`/`Scene`/`WindowGroup` 只要 11.0+、`WKDownload` 只要 11.3+）——於是把主線那包的部署目標下修到 `.v11`，同時把原本鎖住 Stage 1 的 `12-` 分流改造成 `10.15` 分流：Stage 1 改用 Apple 原生 Vision framework 做 OCR，不再依賴 `zh-cn-to-tw-ocr-service` 那支 Python service。之所以還是需要分兩包：RapidOCR 依賴的 onnxruntime 編譯二進位檔 `minos` 寫死 `11.0`（`otool -l` 查證過），10.15 上跑不動任何 Python-based OCR 引擎，這是硬限制，不是選擇：
+一開始整支 App 用同一個 `Package.swift`（`platforms: [.macOS(.v13)]`），`LSMinimumSystemVersion` 也寫死 `13.0`。後來查證發現這個 `13.0` 門檻是當初隨手選的保守值，翻遍程式碼找不到任何一行真的需要 13.0 的 API（SwiftUI 的 `App`/`Scene`/`WindowGroup` 只要 11.0+、`WKDownload` 只要 11.3+）——於是把主線那包的部署目標下修到 `.v11`，同時把原本鎖住 Stage 1 的 `12-` 分流改造成 `10.15` 分流：Stage 1 不再依賴 `zh-cn-to-tw-ocr-service` 那支 Python service，改用 App 內嵌的 Tesseract 做 OCR（2.0（含）以前用 Apple Vision framework，見下面「10.15 的 OCR 為什麼是 Tesseract」）。之所以還是需要分兩包：RapidOCR 依賴的 onnxruntime 編譯二進位檔 `minos` 寫死 `11.0`（`otool -l` 查證過），10.15 上跑不動任何 Python-based OCR 引擎，這是硬限制，不是選擇：
 
 - **11+**（根目錄 `Package.swift`）：`platforms .v11`，Stage 1/2 都能用，Stage 1 用本機的 `zh-cn-to-tw-ocr-service`（RapidOCR）。
-- **10.15**（`Legacy/Package.swift`）：`platforms: [.macOS(.v10_15)]`，Stage 1/2 都能用，但 Stage 1 改用 Apple 原生 Vision framework（`VNRecognizeTextRequest`）做 OCR。
+- **10.15**（`Legacy/Package.swift`）：`platforms: [.macOS(.v10_15)]`，Stage 1/2 都能用，但 Stage 1 改用 App 內嵌的 Tesseract 做 OCR，辨識品質比 `11+` 差（見下面）。
 
-兩包是**兩個獨立的 SwiftPM package**，不是同一個 `Package.swift` 裡的兩個 target——SwiftPM 的 `platforms` 是整個 package 共用一份，沒有 per-target 的部署目標可以設。`Legacy/Sources/ZhCnToTwLegacy/` 底下，`ContentView.swift`/`WebView.swift`/`GoogleDesktopSignIn.swift`/`SystemActivityGuard.swift`/`Uninstaller.swift` 全部是**符號連結**指回 `Sources/ZhCnToTw/` 底下同一份檔案，不是複製維護兩份；這個 target 專屬、不 symlink 的檔案有兩個：`App.swift`（進入點）跟 `VisionOCRManager.swift`（Vision framework OCR 實作）：
+兩包是**兩個獨立的 SwiftPM package**，不是同一個 `Package.swift` 裡的兩個 target——SwiftPM 的 `platforms` 是整個 package 共用一份，沒有 per-target 的部署目標可以設。`Legacy/Sources/ZhCnToTwLegacy/` 底下，`ContentView.swift`/`WebView.swift`/`GoogleDesktopSignIn.swift`/`SystemActivityGuard.swift`/`Uninstaller.swift` 全部是**符號連結**指回 `Sources/ZhCnToTw/` 底下同一份檔案，不是複製維護兩份；這個 target 專屬、不 symlink 的檔案有兩個：`App.swift`（進入點）跟 `TesseractOCRManager.swift`（呼叫內嵌 Tesseract 的 OCR 實作）：
 
 - SwiftUI 的 `App`/`Scene`/`WindowGroup`/`.commands`/`NSApplicationDelegateAdaptor` 整組宣告式生命週期都要 **macOS 11.0+** 才有（實測 `swift build` 對 `.v10_15` 直接報錯），10.15 的 SwiftUI 1.0 根本沒有這組 API。`Legacy` 的 `App.swift` 改回傳統的 `NSApplicationDelegate` + 手動 `NSWindow` + `NSHostingController`，選單也改成手動組 `NSMenu`（含 Edit 選單，不然 WKWebView 裡的輸入框可能連 Cmd+C/V 都用不了）。
 - `WKDownload`/`WKDownloadDelegate` 整組（含 `WKNavigationActionPolicy.download`）要 **macOS 11.3+**（SDK 標頭實測確認），共用的 `WebView.swift` 因此把這幾個方法搬進一段 `@available(macOS 11.3, *) extension WebView.Coordinator: WKDownloadDelegate`——`10.15` 那包完全不會編到這段。下載改靠新的 `legacyDownload` message channel：`script.js` 偵測到 `osTier === "10.15"` 時，把下載內容轉成 base64 直接 `postMessage` 過去，殼收到後解碼寫進下載資料夾（見 `WebView.swift` 的 `handleLegacyDownload`）；`11+` 跟純瀏覽器都還是走原本 `WKDownload` 那條路，行為不變。
@@ -81,11 +81,25 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 `ContentView.swift` 用 `#if LEGACY_BUILD`（`Legacy/Package.swift` 用 `swiftSettings: [.define("LEGACY_BUILD")]` 定義，`11+` 那個 target 沒有）算出 `osTier`（`"11+"` 或 `"10.15"`），透過 `desktopURL()` 的 `osTier` 查詢參數帶給網頁；網頁拿它決定 `GET /api/version_check` 要查哪個分流的門檻（帶成 `os_version` 參數，見 `zh-cn-to-tw-backend` README「版本檢查」）、本機 OCR 要走 HTTP 輪詢還是 `visionOcr` message channel、下載要走 `WKDownload` 還是 `legacyDownload`。
 
-**`10.15` 那包不內嵌 `zh-cn-to-tw-ocr-service`**——Stage 1 完全靠 `VisionOCRManager.swift` 原生實作，不需要那支 Python service，DMG 體積因此明顯小於 `11+` 那包。
+**`10.15` 那包不內嵌 `zh-cn-to-tw-ocr-service`**——Stage 1 靠 `TesseractOCRManager.swift` 呼叫內嵌的 Tesseract（`Contents/Resources/tesseract/`，執行檔約 5 MB + 簡體中文模型約 2.5 MB），不需要那支 Python service，DMG 體積因此明顯小於 `11+` 那包。
+
+#### 10.15 的 OCR 為什麼是 Tesseract
+
+2.0（含）以前 `10.15` 那包用 Apple Vision framework（`VNRecognizeTextRequest`，設 `recognitionLanguages = ["zh-Hans", "zh-Hant"]`）。2026-11 第一次有 10.15 實機回報，處理結果整份是「亂碼」：內容其實是一行行的英文大寫字母，夾著 Stage 2 轉出來的全形標點。原因是 10.15 的 Vision 只有 `VNRecognizeTextRequestRevision1`，SDK 標頭寫明「only supports English」，支援中文的 Revision2 要 macOS 11（在開發機上呼叫 `supportedRecognitionLanguages(for: .accurate, revision: 1)` 也只回 `["en-US"]`）。指定不支援的語言不會報錯，Vision 會默默改用英文模型。之前在新系統上測試看起來完全正常，是因為新系統的 Vision 預設用 Revision3，有中文——部署目標壓低只保證 API 存在，不保證 API 的能力一樣。
+
+改用 Tesseract 5.5.4 + Leptonica 1.87.0，由 `packaging/build_tesseract_10_15.sh` 從原始碼編譯（版本與 SHA-256 釘在腳本裡）：兩者都編成靜態、關掉所有外部影像格式與網路功能，成品只依賴系統的 `libSystem`、`libc++`，`minos` 10.15，腳本最後會自動檢查這兩點，不合格就中止。只編 x86_64：跑 10.15 的 Mac 一定是 Intel。模型用 `tessdata_fast` 的 `chi_sim`。
+
+評估時拿 5 頁實際劇本跟 `11+` 的 RapidOCR 比對（共同認出的中文字比例）：乾淨的單欄掃描 0.96–0.97，一般內頁 0.88–0.90，手機拍的歪斜跨頁只有 0.78（開「切割左右頁」也沒改善）。`tessdata_best` 品質幾乎一樣但慢 2–3 倍，所以用 fast。速度反而比 RapidOCR 快（每頁 2–6 秒 vs. 12–31 秒，同一台 Intel 開發機）。
+
+Tesseract 的 `chi_sim` 會在中文字之間插入空格，`TesseractOCRManager.cleanUp` 會拿掉中文字（含全形標點）之間的空格，英文單字之間的空格不動；半形標點不轉，Stage 2 本來就會轉。辨識完如果結果幾乎沒有中文字（中文少於兩成），會在進度紀錄裡顯示警告，不會再「看起來成功、其實整份亂碼」。
+
+#### 10.15 那包的日誌檔
+
+從 Finder／Dock 打開的 App，stdout、stderr 沒有接到任何地方，`print()` 的內容不會出現在任何地方（也不在 Console.app）。`10.15` 那包啟動時如果 stdout 不是終端機，會把 stdout、stderr 接到 `~/Library/Logs/ZhCnToTw/app.log`（超過 5 MB 換成 `app.log.1`），內容包括 WebView 載入狀態、網頁 console 轉送、每一頁 OCR 的耗時與錯誤。請使用者回報問題時，請對方在 Finder 按「前往」→「前往檔案夾⋯」輸入 `~/Library/Logs/ZhCnToTw`，把 `app.log` 傳過來。從終端機直接執行時維持印在終端機上。`11+` 那包還沒有這個機制。
 
 兩包目前用**同一個 `CFBundleIdentifier`**（`com.beethoreven.zh-cn-to-tw`）——真實使用者只會裝其中一包（依自己的 macOS 版本選對應的 DMG），從使用者角度就是同一個 App。這代表在同一台機器上先後裝兩包做測試會共用同一份 `~/Library/WebKit/<bundle-id>` 等資料、後裝的會蓋掉 `/Applications` 裡先裝的那個，不能同時裝著並排比較——只是本機測試才會遇到的限制，不影響正式使用情境。
 
-**還沒有在真正的舊系統（macOS 10.15）上實測過。** 部署目標壓低只保證程式碼在該版本的 API 集合下能編譯、能連結，不保證執行期行為完全一致——尤其 `legacyDownload` 這條下載路徑跟 `VisionOCRManager` 的 Vision framework OCR 實作，開發機（Apple Silicon，跑 macOS 26）沒辦法用 Virtualization.framework 跑到 macOS 12 以下（那是 Intel 時代的系統），沒有真實舊硬體無法驗證。已經確認過的是：這包在**新系統**（Tahoe）上能正常裝、開、跑基本流程（含 Stage 1 的 Vision framework OCR）——因為部署目標只是下限不是上限，`dyld` 只檢查「目前系統版本 ≥ minos」，這是在新機器上先驗證整體邏輯的正常開發流程，但測不到「真正 10.15 系統上 Vision framework 中文辨識品質」這件事，這是唯一沒辦法在新機器上關掉的風險。
+**還沒有在真正的舊系統（macOS 10.15）上實測過。** 部署目標壓低只保證程式碼在該版本的 API 集合下能編譯、能連結，不保證執行期行為完全一致——尤其 `legacyDownload` 這條下載路徑跟內嵌的 Tesseract 執行檔，開發機（Apple Silicon，跑 macOS 26）沒辦法用 Virtualization.framework 跑到 macOS 12 以下（那是 Intel 時代的系統），沒有真實舊硬體無法驗證。已經確認過的是：這包在**新系統**（Tahoe）上能正常裝、開、跑基本流程（含 Stage 1 的 Tesseract OCR）——因為部署目標只是下限不是上限，`dyld` 只檢查「目前系統版本 ≥ minos」。但這個做法有盲點，而且真的出過事：Vision framework 版本在新系統上看起來完全正常，10.15 上卻只認得英文（見上面「10.15 的 OCR 為什麼是 Tesseract」）。改用 Tesseract 之後，辨識能力不再依賴系統版本，剩下的風險是內嵌執行檔能不能在 10.15 上啟動（`std::filesystem` 這類 10.15 才有的 libc++ 功能，編譯期檢查有過，執行期還沒實機驗證）。
 
 ### 已知限制
 
@@ -102,7 +116,7 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 - macOS 11+（打包 `11+` 那包）；打包 `10.15` 那包本身在 macOS 11.3+ 的機器上就能做（`swift build` 只是編譯，部署目標是「執行期下限」不是「開發機下限」），但沒有真正舊系統沒辦法做最終驗證，見上面「版本分流」的說明。
 - Xcode（含 Swift 5.9+ 工具鏈）
-- 打包 `11+` 那包需要已經打包好的 `zh-cn-to-tw-ocr-service`（見該 repo的 README，`dist/zh-cn-to-tw-ocr-service/`）——沒有的話 App 還是能開，只是本機 OCR 功能會顯示服務啟動失敗。`10.15` 那包不需要（Stage 1 用 Vision framework，不內嵌這支 Python service）。
+- 打包 `11+` 那包需要已經打包好的 `zh-cn-to-tw-ocr-service`（見該 repo的 README，`dist/zh-cn-to-tw-ocr-service/`）——沒有的話 App 還是能開，只是本機 OCR 功能會顯示服務啟動失敗。`10.15` 那包不需要這支 Python service，但需要 `cmake`、`ninja`（`brew install cmake ninja`）：第一次打包時 `build_app_10_15.sh` 會呼叫 `build_tesseract_10_15.sh` 下載原始碼、編譯 Tesseract（約 3 分鐘），成品快取在 `Legacy/.build/tesseract/`，之後不重編。
 
 ## 打包成 .app
 
@@ -111,7 +125,7 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 ```bash
 cd zh-cn-to-tw-mac
 bash packaging/build_app_11_plus.sh debug   # macOS 11+ 那包
-bash packaging/build_app_10_15.sh debug     # macOS 10.15 那包（Vision framework OCR）
+bash packaging/build_app_10_15.sh debug     # macOS 10.15 那包（內嵌 Tesseract OCR）
 ```
 
 各自會做這些事：
@@ -256,12 +270,12 @@ Version control goes through GitHub Releases (under the `zh-cn-to-tw-mac` repo, 
 
 ### Version Tiers: 11+ and 10.15
 
-The whole app originally shared one `Package.swift` (`platforms: [.macOS(.v13)]`), and `LSMinimumSystemVersion` was hardcoded to `13.0`. Later investigation found that `13.0` floor was just a conservative default picked at the start — a full sweep of the codebase turned up nothing that actually needs 13.0 (SwiftUI's `App`/`Scene`/`WindowGroup` only need 11.0+, `WKDownload` only needs 11.3+). So the main build's deployment target got lowered to `.v11`, and the tier that used to lock Stage 1 entirely (`12-`) was reworked into a `10.15` tier instead: Stage 1 now does OCR natively via Apple's Vision framework, instead of depending on the `zh-cn-to-tw-ocr-service` Python service. The split still has to exist because RapidOCR's onnxruntime dependency has its `minos` hardcoded to `11.0` in its compiled binary (confirmed with `otool -l`) — no Python-based OCR engine runs on 10.15 at all, that's a hard constraint, not a design choice:
+The whole app originally shared one `Package.swift` (`platforms: [.macOS(.v13)]`), and `LSMinimumSystemVersion` was hardcoded to `13.0`. Later investigation found that `13.0` floor was just a conservative default picked at the start — a full sweep of the codebase turned up nothing that actually needs 13.0 (SwiftUI's `App`/`Scene`/`WindowGroup` only need 11.0+, `WKDownload` only needs 11.3+). So the main build's deployment target got lowered to `.v11`, and the tier that used to lock Stage 1 entirely (`12-`) was reworked into a `10.15` tier instead: Stage 1 no longer depends on the `zh-cn-to-tw-ocr-service` Python service and uses a bundled Tesseract instead (up to and including 2.0 it used Apple's Vision framework — see "Why 10.15 OCR uses Tesseract" below). The split still has to exist because RapidOCR's onnxruntime dependency has its `minos` hardcoded to `11.0` in its compiled binary (confirmed with `otool -l`) — no Python-based OCR engine runs on 10.15 at all, that's a hard constraint, not a design choice:
 
 - **11+** (root `Package.swift`): `platforms .v11`, Stage 1 and 2 both work, Stage 1 uses the local `zh-cn-to-tw-ocr-service` (RapidOCR).
-- **10.15** (`Legacy/Package.swift`): `platforms: [.macOS(.v10_15)]`, Stage 1 and 2 both work, but Stage 1 uses Apple's native Vision framework (`VNRecognizeTextRequest`) instead.
+- **10.15** (`Legacy/Package.swift`): `platforms: [.macOS(.v10_15)]`, Stage 1 and 2 both work, but Stage 1 uses a bundled Tesseract instead, with lower recognition quality than `11+` (see below).
 
-The two are **separate SwiftPM packages**, not two targets in one `Package.swift` — SwiftPM's `platforms` setting is package-wide, there's no per-target deployment target. Under `Legacy/Sources/ZhCnToTwLegacy/`, `ContentView.swift`/`WebView.swift`/`GoogleDesktopSignIn.swift`/`SystemActivityGuard.swift`/`Uninstaller.swift` are all **symlinks** back to the same files under `Sources/ZhCnToTw/`, not a second copy to maintain; two files are genuinely unique to this target and not symlinked: `App.swift` (the entry point) and `VisionOCRManager.swift` (the Vision framework OCR implementation):
+The two are **separate SwiftPM packages**, not two targets in one `Package.swift` — SwiftPM's `platforms` setting is package-wide, there's no per-target deployment target. Under `Legacy/Sources/ZhCnToTwLegacy/`, `ContentView.swift`/`WebView.swift`/`GoogleDesktopSignIn.swift`/`SystemActivityGuard.swift`/`Uninstaller.swift` are all **symlinks** back to the same files under `Sources/ZhCnToTw/`, not a second copy to maintain; two files are genuinely unique to this target and not symlinked: `App.swift` (the entry point) and `TesseractOCRManager.swift` (the OCR implementation that calls the bundled Tesseract):
 
 - SwiftUI's `App`/`Scene`/`WindowGroup`/`.commands`/`NSApplicationDelegateAdaptor` — the whole declarative app-lifecycle API — all need **macOS 11.0+** (confirmed by actually running `swift build` against `.v10_15` and getting a hard error); Catalina's SwiftUI 1.0 simply doesn't have this API surface. `Legacy`'s `App.swift` goes back to a classic `NSApplicationDelegate` + manually-created `NSWindow` + `NSHostingController`, with the menu bar built by hand too (including an Edit menu — without it, Cmd+C/V might not even work in WKWebView's own text fields).
 - The whole `WKDownload`/`WKDownloadDelegate` API (including `WKNavigationActionPolicy.download`) needs **macOS 11.3+** (confirmed against the SDK headers), so the shared `WebView.swift` moved those methods into an `@available(macOS 11.3, *) extension WebView.Coordinator: WKDownloadDelegate` — the `10.15` build simply doesn't compile that extension in. Downloads there go through a new `legacyDownload` message channel instead: `script.js` detects `osTier === "10.15"` and posts the download content as base64 directly, which the shell decodes and writes to the Downloads folder (see `handleLegacyDownload` in `WebView.swift`); `11+` and plain browsers still use `WKDownload` exactly as before.
@@ -269,11 +283,25 @@ The two are **separate SwiftPM packages**, not two targets in one `Package.swift
 
 `ContentView.swift` computes `osTier` (`"11+"` or `"10.15"`) via `#if LEGACY_BUILD` (defined by `Legacy/Package.swift`'s `swiftSettings: [.define("LEGACY_BUILD")]`; the `11+` target doesn't define it) and passes it to the page through `desktopURL()`'s `osTier` query parameter; the page uses it to decide which tier's threshold to query via `GET /api/version_check` (sent as an `os_version` parameter — see `zh-cn-to-tw-backend`'s README, "Version Check"), whether local OCR goes through HTTP polling or the `visionOcr` message channel, and whether to download via `WKDownload` or `legacyDownload`.
 
-**The `10.15` build does not embed `zh-cn-to-tw-ocr-service`** — Stage 1 there runs entirely on `VisionOCRManager.swift`'s native implementation, so it doesn't need that Python service at all, and the DMG is noticeably smaller than the `11+` build as a result.
+**The `10.15` build does not embed `zh-cn-to-tw-ocr-service`** — Stage 1 there runs through `TesseractOCRManager.swift` calling the bundled Tesseract (`Contents/Resources/tesseract/`, about 5 MB of executable plus a 2.5 MB Simplified Chinese model), so it doesn't need that Python service at all, and the DMG is noticeably smaller than the `11+` build as a result.
+
+#### Why 10.15 OCR uses Tesseract
+
+Up to and including 2.0, the `10.15` build used Apple's Vision framework (`VNRecognizeTextRequest` with `recognitionLanguages = ["zh-Hans", "zh-Hant"]`). In 2026-11 the first report from a real 10.15 machine said the output was "garbled": it was actually lines of uppercase Latin letters mixed with full-width punctuation added by Stage 2. The cause: 10.15's Vision only has `VNRecognizeTextRequestRevision1`, whose SDK header says it "only supports English"; the Chinese-capable Revision2 requires macOS 11 (calling `supportedRecognitionLanguages(for: .accurate, revision: 1)` on the dev machine also returns only `["en-US"]`). Requesting an unsupported language doesn't error — Vision silently falls back to its English model. Earlier testing on a newer system looked perfectly fine because newer Vision defaults to Revision3, which has Chinese — lowering the deployment target guarantees the API exists, not that it has the same capabilities.
+
+It now uses Tesseract 5.5.4 + Leptonica 1.87.0, built from source by `packaging/build_tesseract_10_15.sh` (versions and SHA-256 pinned in the script): both built static with all external image formats and networking disabled, so the result depends only on the system `libSystem` and `libc++` with `minos` 10.15; the script checks both at the end and aborts if either fails. x86_64 only: any Mac running 10.15 is Intel. The model is `chi_sim` from `tessdata_fast`.
+
+Evaluation against `11+`'s RapidOCR on 5 real script pages (share of Chinese characters both recognized): clean single-column scans 0.96–0.97, typical pages 0.88–0.90, phone-photographed skewed spreads only 0.78 ("split left/right pages" didn't help). `tessdata_best` was nearly identical but 2–3× slower, hence fast. It's actually faster than RapidOCR (2–6 s vs. 12–31 s per page on the same Intel dev machine).
+
+Tesseract's `chi_sim` inserts spaces between Chinese characters; `TesseractOCRManager.cleanUp` removes spaces between Chinese characters (including full-width punctuation) but leaves spaces between English words alone, and doesn't convert half-width punctuation since Stage 2 already does. If the result has almost no Chinese (under 20%), a warning appears in the progress log, so a run can no longer "look successful but be entirely garbled."
+
+#### The 10.15 build's log file
+
+When the app is opened from Finder/Dock, stdout and stderr go nowhere and `print()` output is lost (it's not in Console.app either). At launch, if stdout isn't a terminal, the `10.15` build redirects stdout and stderr to `~/Library/Logs/ZhCnToTw/app.log` (rotated to `app.log.1` past 5 MB) — WebView load status, forwarded page console output, and per-page OCR timing and errors. To collect it from a user, have them use Finder's "Go" → "Go to Folder…" with `~/Library/Logs/ZhCnToTw` and send `app.log`. Running directly from a terminal keeps printing there. The `11+` build doesn't have this yet.
 
 Both builds currently share the **same `CFBundleIdentifier`** (`com.beethoreven.zh-cn-to-tw`) — a real user only ever installs one of the two (whichever matches their macOS version), so from their perspective it's the same app. That does mean installing both on one machine for testing shares the same `~/Library/WebKit/<bundle-id>` data etc., and the second install in `/Applications` overwrites the first — a testing-only limitation, not something that affects real usage.
 
-**Not yet tested on a genuinely old system (macOS 10.15).** Lowering the deployment target only guarantees the code compiles and links against that OS version's API surface — it doesn't guarantee identical runtime behavior, especially the `legacyDownload` path and `VisionOCRManager`'s Vision framework OCR implementation. The dev machine (Apple Silicon, running macOS 26) can't run macOS 12 and below via Virtualization.framework (that's Intel-era software), so there's no way to verify without real old hardware. What has been confirmed: this build installs, opens, and runs the basic flow fine — including Stage 1's Vision framework OCR — on a *newer* system (Tahoe), because a deployment target is a floor, not a ceiling, and `dyld` only checks "current OS ≥ minos." That's the normal way to sanity-check overall logic without old hardware on hand, but it can't exercise Vision framework's actual Chinese-recognition quality on a genuine 10.15 system — that's the one risk this can't rule out from a newer machine.
+**Not yet tested on a genuinely old system (macOS 10.15).** Lowering the deployment target only guarantees the code compiles and links against that OS version's API surface — it doesn't guarantee identical runtime behavior, especially the `legacyDownload` path and the bundled Tesseract executable. The dev machine (Apple Silicon, running macOS 26) can't run macOS 12 and below via Virtualization.framework (that's Intel-era software), so there's no way to verify without real old hardware. What has been confirmed: this build installs, opens, and runs the basic flow fine — including Stage 1's Tesseract OCR — on a *newer* system (Tahoe), because a deployment target is a floor, not a ceiling, and `dyld` only checks "current OS ≥ minos." But that approach has a blind spot, and it did bite: the Vision framework version looked perfectly fine on a newer system yet only recognized English on 10.15 (see "Why 10.15 OCR uses Tesseract" above). With Tesseract, recognition no longer depends on the OS version; the remaining risk is whether the bundled executable launches on 10.15 at all (10.15-era libc++ features like `std::filesystem` pass the compile-time checks but haven't been verified on real hardware).
 
 ### Known Limitations
 
@@ -290,7 +318,7 @@ Both builds currently share the **same `CFBundleIdentifier`** (`com.beethoreven.
 
 - macOS 11+ to build the `11+` package; building the `10.15` package works fine on macOS 11.3+ dev machines too (`swift build` only compiles — a deployment target is a runtime floor, not a "minimum dev machine" requirement), but final verification needs real old hardware, see "Version Tiers" above.
 - Xcode (with the Swift 5.9+ toolchain)
-- Building the `11+` package needs a built `zh-cn-to-tw-ocr-service` (see that repo's README, produces `dist/zh-cn-to-tw-ocr-service/`) — without it the app still opens, local OCR just shows a startup failure. The `10.15` package doesn't need it (Stage 1 uses Vision framework, doesn't embed that Python service).
+- Building the `11+` package needs a built `zh-cn-to-tw-ocr-service` (see that repo's README, produces `dist/zh-cn-to-tw-ocr-service/`) — without it the app still opens, local OCR just shows a startup failure. The `10.15` package doesn't need that Python service, but does need `cmake` and `ninja` (`brew install cmake ninja`): on the first build, `build_app_10_15.sh` calls `build_tesseract_10_15.sh` to download sources and compile Tesseract (about 3 minutes), cached under `Legacy/.build/tesseract/` and not rebuilt afterward.
 
 ## Building the .app
 
@@ -299,7 +327,7 @@ Two separate scripts, not one script with a flag — they correspond to two inde
 ```bash
 cd zh-cn-to-tw-mac
 bash packaging/build_app_11_plus.sh debug   # macOS 11+ build
-bash packaging/build_app_10_15.sh debug     # macOS 10.15 build (Vision framework OCR)
+bash packaging/build_app_10_15.sh debug     # macOS 10.15 build (bundled Tesseract OCR)
 ```
 
 Each does:

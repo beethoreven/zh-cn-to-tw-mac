@@ -6,10 +6,11 @@
 # Legacy/Package.swift 開頭的說明。
 #
 # 把 SwiftPM 編出來的裸執行檔包成一個真正的 .app bundle。**不**內嵌
-# zh-cn-to-tw-ocr-service——這包 Stage 1 改用 VisionOCRManager 原生
-# 實作（Apple Vision framework），完全不需要那支 Python service，見
-# Legacy/Sources/ZhCnToTwLegacy/App.swift、VisionOCRManager.swift
-# 開頭的說明。這也是這包 DMG 明顯比 11+ 那包小的原因。
+# zh-cn-to-tw-ocr-service（10.15 跑不動 onnxruntime），Stage 1 改用內嵌的
+# Tesseract（build_tesseract_10_15.sh 編出來的靜態執行檔 + 簡體中文模型，
+# 放在 Resources/tesseract/），由 TesseractOCRManager.swift 呼叫。原本用
+# Apple Vision framework，但 10.15 的 Vision 只認得英文，見
+# build_tesseract_10_15.sh 開頭的說明。
 set -euo pipefail
 
 # 固定用 C locale——原因見 build_app_11_plus.sh 同一段說明，macOS 內建的
@@ -45,6 +46,11 @@ APP_BUNDLE="$PACKAGE_PATH/.build/$APP_DISPLAY_NAME.app"
 # 還是 visionOcr message channel。
 WEB_SRC_DIR="${WEB_SRC_DIR:-$REPO_ROOT/../zh-cn-to-tw-web}"
 
+echo "==> Tesseract（10.15 的 Stage 1 OCR 引擎）"
+bash "$REPO_ROOT/packaging/build_tesseract_10_15.sh"
+# build_tesseract_10_15.sh 每次都會把 current 指向這次釘的版本。
+TESSERACT_DIR="$PACKAGE_PATH/.build/tesseract/current"
+
 echo "==> swift build ($CONFIG，package-path=$PACKAGE_PATH)"
 swift build --package-path "$PACKAGE_PATH" -c "$CONFIG"
 
@@ -52,10 +58,15 @@ echo "==> 組裝 .app bundle"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources/web"
+mkdir -p "$APP_BUNDLE/Contents/Resources/tesseract/bin" "$APP_BUNDLE/Contents/Resources/tesseract/tessdata"
 
 cp "$PACKAGE_PATH/.build/$CONFIG/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp "$REPO_ROOT/packaging/Info-10-15.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$REPO_ROOT/packaging/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+# Tesseract 缺了 App 還是開得起來，但 Stage 1 一定失敗，所以缺檔直接中止。
+cp "$TESSERACT_DIR/bin/tesseract" "$APP_BUNDLE/Contents/Resources/tesseract/bin/tesseract"
+cp "$TESSERACT_DIR/tessdata/chi_sim.traineddata" "$APP_BUNDLE/Contents/Resources/tesseract/tessdata/chi_sim.traineddata"
+echo "    已內嵌 Tesseract：$TESSERACT_DIR"
 
 if [ -d "$WEB_SRC_DIR" ]; then
   # 2.0 前端是 index.html + assets/、css/、js/ 三個資料夾（ES module）。
@@ -86,6 +97,9 @@ fi
 # 組裝完之後重新簽一次（ad-hoc，不需要花錢的開發者憑證），讓簽章
 # 涵蓋這次真正打包進去的所有內容。
 echo "==> 重新簽章（ad-hoc，涵蓋組裝完的完整 bundle）"
+# 內嵌的 tesseract 先單獨簽一次：它放在 Resources/ 底下，--deep 不一定會
+# 把它當成巢狀程式碼處理，明確簽過最保險。
+codesign --force --sign - "$APP_BUNDLE/Contents/Resources/tesseract/bin/tesseract"
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "==> 完成：$APP_BUNDLE"

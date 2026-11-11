@@ -1,6 +1,6 @@
 #!/bin/bash
 # 打包 macOS 11+ 那包（根目錄 Package.swift，platforms .v11）。macOS
-# 10.15、改用 Vision framework 做 Stage 1 OCR 的那包是
+# 10.15、改用內嵌 Tesseract 做 Stage 1 OCR 的那包是
 # build_app_10_15.sh，兩支分開維護——不是同一支腳本帶參數切換，因為
 # 兩包對應的是兩個獨立的 SwiftPM package（Legacy/Package.swift 是另一個
 # 部署目標壓到 10.15 的 package，原因見那支檔案開頭的說明），swift build
