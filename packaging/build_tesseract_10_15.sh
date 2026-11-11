@@ -40,7 +40,7 @@ TESSDATA_COMMIT="87416418657359cb625c412a48b6e1d6d41c29bd"
 CHI_SIM_SHA256="a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730"
 
 # 快取資料夾名稱帶上這支腳本自己的雜湊：之後改了編譯參數但版本號沒變時，
-# 只看版本號會沿用舊成品、改動根本沒生效（known-issue-check 第 21 條）。
+# 只看版本號會沿用舊成品、改動根本沒生效，打包出來的檔案看起來是新的、內容卻是舊的。
 SCRIPT_HASH="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -c1-8)"
 OUT_DIR="$REPO_ROOT/Legacy/.build/tesseract/$TESSERACT_VERSION-lept$LEPTONICA_VERSION-$SCRIPT_HASH"
 OUT_BIN="$OUT_DIR/bin/tesseract"
