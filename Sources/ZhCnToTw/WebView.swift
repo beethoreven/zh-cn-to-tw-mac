@@ -174,6 +174,22 @@ enum ShellSafety {
     static func isDirectChild(_ url: URL, of directory: URL) -> Bool {
         url.standardizedFileURL.deletingLastPathComponent().path == directory.standardizedFileURL.path
     }
+
+    /// 這個 App 只會存這兩種檔案（網頁那邊也只收這兩種，見 zh-cn-to-tw-web
+    /// 的 js/core/filename.js）。殼再擋一次，網頁萬一出問題（例如被塞進
+    /// 不該有的內容），也沒辦法讓殼把其他類型的檔案存進使用者的電腦。
+    static let allowedDownloadExtensions: Set<String> = ["txt", "docx"]
+
+    /// 網頁要存的檔案該放在 directory 底下哪裡。檔名整理得出來、副檔名是
+    /// .txt／.docx、最後的位置確實在 directory 這一層，才回傳位置；任何
+    /// 一項不成立回傳 nil，呼叫端就不寫檔。
+    static func downloadDestination(in directory: URL, filename: String) -> URL? {
+        guard let name = safeFilename(filename),
+              allowedDownloadExtensions.contains((name as NSString).pathExtension.lowercased())
+        else { return nil }
+        let destination = uniqueDestination(in: directory, filename: name)
+        return isDirectChild(destination, of: directory) ? destination : nil
+    }
 }
 
 /// 包一層 WKWebView，避免 reloadToken/url 沒真的變也重新 load 一次
@@ -533,9 +549,8 @@ struct WebView: NSViewRepresentable {
         // 檔案寫入。跟 WKDownload 那條路共用同一個 uniqueDestination 命名
         // 規則、同一個 showToast 通知使用者的方式，只是觸發來源不同。
         //
-        // 檔名是網頁給的，只拿它的最後一段當檔名（見
-        // ShellSafety.safeFilename），寫入前再確認目的地真的在下載資料夾
-        // 這一層。
+        // 檔名是網頁給的，只拿它的最後一段當檔名、只收 .txt／.docx，寫入前
+        // 再確認目的地真的在下載資料夾這一層（見 ShellSafety.downloadDestination）。
         private func handleLegacyDownload(_ body: Any, webView: WKWebView?) {
             guard let dict = body as? [String: Any],
                   let filename = dict["filename"] as? String,
@@ -550,10 +565,10 @@ struct WebView: NSViewRepresentable {
                 Self.showToast("下載失敗：找不到下載資料夾", type: "error", in: webView)
                 return
             }
-            let destination = ShellSafety.uniqueDestination(in: downloadsDir, filename: filename)
-            guard ShellSafety.isDirectChild(destination, of: downloadsDir) else {
-                print("[webview-legacy-download] 目的地不在下載資料夾內，不寫入：\(destination.path)")
-                Self.showToast("下載失敗：檔名不合法", type: "error", in: webView)
+            guard let destination = ShellSafety.downloadDestination(in: downloadsDir, filename: filename) else {
+                // 不印出檔名：它是網頁給的，不是殼自己產生的內容
+                print("[webview-legacy-download] 檔名不能用、不是 .txt／.docx，或目的地不在下載資料夾內，不寫入")
+                Self.showToast("下載失敗：檔名不合法，或不是 .txt／.docx 檔", type: "error", in: webView)
                 return
             }
             do {
@@ -621,20 +636,22 @@ struct WebView: NSViewRepresentable {
             signIn.start { [weak self] result in
                 self?.activeSignIn = nil
                 switch result {
-                case .success(let idToken):
+                case .success(let signedIn):
                     // 網頁那邊原本 Google Identity Services 登入成功時就是
-                    // 呼叫這個函式（見 script.js 的 handleCredentialResponse）
+                    // 呼叫這個函式（見 js/auth/login.js 的 handleCredentialResponse）
                     // ——直接沿用同一套邏輯（存 token、驗證、更新 UI），系統
                     // 瀏覽器登入完成後只是換一種方式把 token 交回網頁，
-                    // 後續流程完全不用另外重寫一份。
+                    // 後續流程完全不用另外重寫一份。nonce 是這次登入的原值，
+                    // 網頁會跟 token 一起送給後端（見 GoogleDesktopSignIn 的
+                    // start(completion:)）。
                     //
                     // token 是從本機那個 port 收進來的內容，放進 JS 之前一律
                     // 轉成字串字面值（見 ShellSafety.javaScriptLiteral）；
                     // GoogleDesktopSignIn 已經只放行 JWT 形狀的值，這裡是
                     // 第二道。
-                    webView.evaluateJavaScript(
-                        "handleCredentialResponse({credential: \(ShellSafety.javaScriptLiteral(idToken))})"
-                    )
+                    let credential = ShellSafety.javaScriptLiteral(signedIn.idToken)
+                    let nonce = ShellSafety.javaScriptLiteral(signedIn.nonce)
+                    webView.evaluateJavaScript("handleCredentialResponse({credential: \(credential), nonce: \(nonce)})")
                     // 登入是在系統瀏覽器完成的，使用者這時候人在瀏覽器那邊；
                     // window.close() 不保證能關掉那個分頁（瀏覽器對非 JS
                     // 開的分頁通常會擋），所以主動把這個 App 切回前景，
@@ -921,17 +938,19 @@ extension WebView.Coordinator: WKDownloadDelegate {
         // 覆蓋掉使用者之前下載的同名檔案。
         //
         // suggestedFilename 來自網頁（最源頭是伺服器的回應），跟
-        // legacyDownload 那條路一樣只取最後一段當檔名、再確認目的地真的
-        // 在下載資料夾這一層；不成立就取消這次下載。
+        // legacyDownload 那條路一樣只取最後一段當檔名、只收 .txt／.docx、
+        // 再確認目的地真的在下載資料夾這一層；不成立就取消這次下載。
         let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         guard let downloadsDir else {
             completionHandler(nil)
             return
         }
-        let destination = ShellSafety.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
-        guard ShellSafety.isDirectChild(destination, of: downloadsDir) else {
-            print("[webview-download] 目的地不在下載資料夾內，取消下載：\(destination.path)")
+        guard let destination = ShellSafety.downloadDestination(in: downloadsDir, filename: suggestedFilename) else {
+            print("[webview-download] 檔名不能用、不是 .txt／.docx，或目的地不在下載資料夾內，取消下載")
             completionHandler(nil)
+            // 這樣取消不會再觸發 didFailWithError（實測），要在這裡自己通知，
+            // 不然使用者按了下載卻什麼都沒發生
+            Self.showToast("下載失敗：檔名不合法，或不是 .txt／.docx 檔", type: "error", in: download.webView)
             return
         }
         downloadDestinations[ObjectIdentifier(download)] = destination

@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Network
 
@@ -14,10 +15,10 @@ import Network
 /// 的登入網址（redirect_uri 指到這個本機服務，並帶上這次登入專屬的
 /// state）-> 使用者在真正的瀏覽器分頁完成登入 -> Google 用
 /// response_mode=form_post 把 ID Token 連同 state POST 回這個本機服務
-/// -> 確認 state 是自己發出去的那一個、token 的形狀正確，才交給呼叫端
-/// （呼叫端會透過 evaluateJavaScript 把 token 塞回網頁既有的
-/// handleCredentialResponse()，後續驗證/儲存/UI 更新完全沿用網頁原本的
-/// 邏輯，不用改後端一行程式碼）。
+/// -> 確認 state 是自己發出去的那一個、token 的形狀正確，才連同這次登入
+/// 的 nonce 原值交給呼叫端（呼叫端會透過 evaluateJavaScript 把兩者塞回
+/// 網頁既有的 handleCredentialResponse()，後續驗證/儲存/UI 更新完全沿用
+/// 網頁原本的邏輯）。
 final class GoogleDesktopSignIn {
     // 刻意用固定 port，不像 ocr-service 那樣動態跟作業系統要一個空
     // port——Google Cloud Console 的「已授權的重新導向 URI」是精確字串
@@ -37,6 +38,13 @@ final class GoogleDesktopSignIn {
         case listenerFailed(String)
         case timedOut
         case missingToken
+    }
+
+    /// 登入成功的結果。nonce 是這次登入產生的原值，要跟 ID Token 一起交給
+    /// 後端（見 start(completion:) 裡的說明）。
+    struct SignInResult: Equatable {
+        let idToken: String
+        let nonce: String
     }
 
     /// 一條連線目前收到的內容，解析成哪一種狀況。
@@ -71,12 +79,18 @@ final class GoogleDesktopSignIn {
         self.openURL = openURL
     }
 
-    func start(completion: @escaping (Result<String, SignInError>) -> Void) {
+    func start(completion: @escaping (Result<SignInResult, SignInError>) -> Void) {
+        // nonce 原值只留在 App 裡：登入網址帶的是它的 SHA-256，Google 把
+        // 這個雜湊原樣放進 ID Token；登入成功後原值跟 token 一起交給後端，
+        // 後端確認兩者對得上才換發 session。token 會經過系統瀏覽器跟本機的
+        // 回呼，原值不會，所以只拿到 token 的人換不到 session。
+        let nonce = Self.randomToken()
         let finish: (Result<String, SignInError>) -> Void = { [weak self] result in
             guard let self, !self.didFinish else { return }
             self.didFinish = true
             self.tearDown()
-            DispatchQueue.main.async { completion(result) }
+            let signedIn = result.map { SignInResult(idToken: $0, nonce: nonce) }
+            DispatchQueue.main.async { completion(signedIn) }
         }
 
         guard let port = NWEndpoint.Port(rawValue: Self.loopbackPort) else {
@@ -125,7 +139,7 @@ final class GoogleDesktopSignIn {
             URLQueryItem(name: "response_type", value: "id_token"),
             URLQueryItem(name: "response_mode", value: "form_post"),
             URLQueryItem(name: "scope", value: "openid email profile"),
-            URLQueryItem(name: "nonce", value: Self.randomToken()),
+            URLQueryItem(name: "nonce", value: Self.hashedNonce(nonce)),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "prompt", value: "select_account"),
             // hl（host language）明確指定 Google 這個登入/同意畫面要用
@@ -333,5 +347,15 @@ final class GoogleDesktopSignIn {
         var bytes = [UInt8](repeating: 0, count: 16)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// nonce 原值的 SHA-256，base64url、不帶「=」。後端用同一個算法比對
+    /// （zh-cn-to-tw-backend 的 auth_utils/auth.py 的 hashed_nonce），兩邊
+    /// 任何一點不同（大小寫、補不補「=」）登入都會失敗。
+    static func hashedNonce(_ raw: String) -> String {
+        Data(SHA256.hash(data: Data(raw.utf8))).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 }
