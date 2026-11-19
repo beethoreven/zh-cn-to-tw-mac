@@ -78,6 +78,104 @@ final class WebAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 }
 
+/// 殼跟網頁往來時共用的幾個檢查：交給網頁的字串怎麼放進 JavaScript、
+/// 網頁送來的訊息是不是自己那一頁發的、網頁給的檔名能不能拿來存檔。
+///
+/// 放在 WebView.swift 而不是獨立檔案，理由同 WebAssetSchemeHandler：
+/// Legacy/ 底下是逐檔建立的符號連結。
+enum ShellSafety {
+    /// 把一個字串變成可以直接放進一段 JavaScript 裡的字串字面值（含前後
+    /// 的引號）。
+    ///
+    /// 用 JSON 編碼，不自己跳脫字元：自己跳脫只要漏掉一種字元（反斜線、
+    /// 換行…），字串就會在預期之外的地方結束，後面的內容被當成程式執行。
+    /// 殼交給網頁的字串有些不是殼自己產生的（登入回呼的內容、檔名、系統
+    /// 的錯誤訊息），所以一律走這裡，不直接拼進 JS。
+    static func javaScriptLiteral(_ string: String) -> String {
+        // JSONSerialization 只接受陣列或物件當最外層，所以包一層陣列，
+        // 再把頭尾的中括號拿掉。
+        guard let data = try? JSONSerialization.data(withJSONObject: [string]),
+              let json = String(data: data, encoding: .utf8)
+        else { return "\"\"" }
+        // U+2028/U+2029 在 JSON 字串裡合法、不會被跳脫，但舊的 JavaScript
+        // 引擎把它們當成換行（字串字面值裡不能換行），另外換成跳脫寫法。
+        return String(json.dropFirst().dropLast())
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    }
+
+    /// 送訊息過來的是不是殼自己載入的那一頁。
+    ///
+    /// originScheme/originHost/originPort 是送訊息那個 frame 的安全來源，
+    /// frameURL 是它目前的網址，pageURL 是殼自己載入的網址。正常情況比
+    /// 安全來源就夠了。WebKit 給的來源沒有主機名稱時（沒有來源，或是自訂
+    /// scheme 的來源給得不完整——這件事各版 WebKit 不保證一致），退回比
+    /// frame 自己的網址，不能因此把自己的頁面擋在外面。來源有主機名稱卻
+    /// 不相符，就是別的網站，不再往下看。
+    static func isOwnPage(
+        originScheme: String, originHost: String, originPort: Int, frameURL: URL?, pageURL: URL
+    ) -> Bool {
+        if sameOrigin(scheme: originScheme, host: originHost, port: originPort, as: pageURL) {
+            return true
+        }
+        guard originHost.isEmpty, let frameURL else { return false }
+        return sameOrigin(
+            scheme: frameURL.scheme ?? "", host: frameURL.host ?? "", port: frameURL.port ?? 0, as: pageURL
+        )
+    }
+
+    private static func sameOrigin(scheme: String, host: String, port: Int, as pageURL: URL) -> Bool {
+        guard let pageScheme = pageURL.scheme?.lowercased(), !pageScheme.isEmpty else { return false }
+        let scheme = scheme.lowercased()
+        return scheme == pageScheme
+            && host.lowercased() == (pageURL.host ?? "").lowercased()
+            && normalizedPort(port, scheme: scheme) == normalizedPort(pageURL.port ?? 0, scheme: pageScheme)
+    }
+
+    /// 沒寫 port，跟寫了該 scheme 的預設 port，是同一個來源。
+    private static func normalizedPort(_ port: Int, scheme: String) -> Int {
+        switch (scheme, port) {
+        case ("http", 80), ("https", 443): return 0
+        default: return port
+        }
+    }
+
+    /// 把要存檔的名字整理成單純的檔名：只留路徑的最後一段。回傳 nil 代表
+    /// 這個名字沒有可用的部分。
+    ///
+    /// 檔名是網頁給的（下載時來自伺服器的回應），不能直接接在資料夾後面：
+    /// 帶著「../」的名字會寫到資料夾外面去。
+    static func safeFilename(_ name: String) -> String? {
+        let last = (name as NSString).lastPathComponent
+            .components(separatedBy: .controlCharacters).joined()
+            .trimmingCharacters(in: .whitespaces)
+        guard !last.isEmpty, last != ".", last != "..", !last.contains("/") else { return nil }
+        return last
+    }
+
+    /// 在 directory 底下替 filename 找一個還沒被用掉的位置（同名就加上
+    /// 流水號，不蓋掉既有的檔案）。名字不能用就改叫「download」。
+    static func uniqueDestination(in directory: URL, filename: String) -> URL {
+        let name = safeFilename(filename) ?? "download"
+        let ext = (name as NSString).pathExtension
+        let base = (name as NSString).deletingPathExtension
+        var candidate = directory.appendingPathComponent(name)
+        var suffix = 1
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let numbered = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
+            candidate = directory.appendingPathComponent(numbered)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    /// url 是不是直接位在 directory 這一層。寫檔前的最後一道確認：就算
+    /// 上面整理檔名的規則哪天改壞了，也不會寫到資料夾外面。
+    static func isDirectChild(_ url: URL, of directory: URL) -> Bool {
+        url.standardizedFileURL.deletingLastPathComponent().path == directory.standardizedFileURL.path
+    }
+}
+
 /// 包一層 WKWebView，避免 reloadToken/url 沒真的變也重新 load 一次
 /// （SwiftUI 狀態變化會頻繁重新呼叫 updateNSView）。
 struct WebView: NSViewRepresentable {
@@ -161,14 +259,13 @@ struct WebView: NSViewRepresentable {
         // 網頁在 Stage 1/2 工作開始/結束時，透過這個 channel 請殼開/關
         // 系統睡眠保護（見 SystemActivityGuard 的說明）。
         contentController.add(context.coordinator, name: "activityGuard")
+        #if LEGACY_BUILD
         // macOS 10.15 那包沒有 WKDownload（見下面 WKDownloadDelegate 那段
         // extension 的說明，那組 API 要 11.3+），下載改靠這個 channel：
         // 網頁把檔案內容整個轉成 base64 直接 postMessage 過來，殼收到
-        // 後解碼寫檔。這個 channel 本身完全沒用到任何版本限定的新 API，
-        // 兩包都註冊、都能用，只是 11+ 那包的 script.js 平常走
-        // WKDownload 那條路，不會用到這裡。
+        // 後解碼寫檔。只在這個 target 註冊：11+ 那包的下載走 WKDownload，
+        // 用不到——讓網頁直接叫殼寫檔的管道，沒有需要就不開。
         contentController.add(context.coordinator, name: "legacyDownload")
-        #if LEGACY_BUILD
         // 10.15 那包 Stage 1 的 OCR 走這個 channel（TesseractOCRManager，
         // 呼叫 App 內嵌的 Tesseract），不是 11+ 那包用的 HTTP 輪詢——見
         // TesseractOCRManager.swift 開頭的說明。名字裡的 vision 是當初用
@@ -232,6 +329,8 @@ struct WebView: NSViewRepresentable {
 
         private var lastURL: URL?
         private var lastReloadToken: UUID?
+        /// 殼自己的那個 WKWebView。只收它送來的訊息，見 isFromOwnPage。
+        private weak var mainWebView: WKWebView?
         private var sleepObserver: NSObjectProtocol?
         #if LEGACY_BUILD
         private let localOCRManager = TesseractOCRManager()
@@ -309,6 +408,7 @@ struct WebView: NSViewRepresentable {
         }
 
         func load(url: URL, reloadToken: UUID, into webView: WKWebView) {
+            mainWebView = webView
             guard url != lastURL || reloadToken != lastReloadToken else { return }
             lastURL = url
             lastReloadToken = reloadToken
@@ -357,9 +457,34 @@ struct WebView: NSViewRepresentable {
 
         private var activeSignIn: GoogleDesktopSignIn?
 
+        /// 這則訊息是不是殼自己載入的那一頁、從最外層的 frame 送來的。
+        ///
+        /// 訊息通道掛在 WKUserContentController 上，同一份設定底下的每個
+        /// frame、每個彈出視窗都呼叫得到；通道能做的事（開始登入、啟動
+        /// OCR、寫檔）只該給殼自己的頁面用。三個條件都要成立：是殼自己的
+        /// 那個 WKWebView、是最外層的 frame、來源跟殼載入的網址一樣。
+        private func isFromOwnPage(_ message: WKScriptMessage) -> Bool {
+            guard let mainWebView, message.webView === mainWebView,
+                  message.frameInfo.isMainFrame,
+                  let pageURL = lastURL
+            else { return false }
+            let origin = message.frameInfo.securityOrigin
+            return ShellSafety.isOwnPage(
+                originScheme: origin.protocol,
+                originHost: origin.host,
+                originPort: origin.port,
+                frameURL: message.frameInfo.request.url,
+                pageURL: pageURL
+            )
+        }
+
         func userContentController(
             _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
         ) {
+            guard isFromOwnPage(message) else {
+                print("[webview-bridge] 略過不是自己頁面送來的訊息（\(message.name)）")
+                return
+            }
             switch message.name {
             case "desktopSignIn":
                 startDesktopSignIn(for: message.webView)
@@ -381,9 +506,9 @@ struct WebView: NSViewRepresentable {
                 case "stop": onJobActivityStop()
                 default: print("[webview-activity-guard] 不認得的指令：\(message.body)")
                 }
+            #if LEGACY_BUILD
             case "legacyDownload":
                 handleLegacyDownload(message.body, webView: message.webView)
-            #if LEGACY_BUILD
             case "visionOcr":
                 handleVisionOcr(message.body, webView: message.webView)
             #endif
@@ -392,40 +517,54 @@ struct WebView: NSViewRepresentable {
             }
         }
 
+        /// 請網頁顯示一則提示。message 常帶著檔名或系統的錯誤訊息，一律經過
+        /// ShellSafety.javaScriptLiteral，不直接拼進 JS。
+        fileprivate static func showToast(_ message: String, type: String, in webView: WKWebView?) {
+            webView?.evaluateJavaScript(
+                "showToast(\(ShellSafety.javaScriptLiteral(message)), \(ShellSafety.javaScriptLiteral(type)))"
+            )
+        }
+
+        #if LEGACY_BUILD
         // macOS 10.15 那包沒有 WKDownload（要 11.3+，見下面 extension 的
         // 說明），下載改靠這個 channel：網頁把整份檔案內容轉成 base64
         // 直接 postMessage 過來，這裡解碼寫檔——不需要用到任何版本限定
-        // 的新 WebKit API，純粹是 WKScriptMessageHandler（很舊、兩包都
-        // 能用）+ Foundation 的檔案寫入。跟 WKDownload 那條路共用同一個
-        // uniqueDestination 命名規則、同一個 showToast 通知使用者的方式，
-        // 只是觸發來源不同。
+        // 的新 WebKit API，純粹是 WKScriptMessageHandler + Foundation 的
+        // 檔案寫入。跟 WKDownload 那條路共用同一個 uniqueDestination 命名
+        // 規則、同一個 showToast 通知使用者的方式，只是觸發來源不同。
+        //
+        // 檔名是網頁給的，只拿它的最後一段當檔名（見
+        // ShellSafety.safeFilename），寫入前再確認目的地真的在下載資料夾
+        // 這一層。
         private func handleLegacyDownload(_ body: Any, webView: WKWebView?) {
             guard let dict = body as? [String: Any],
                   let filename = dict["filename"] as? String,
                   let base64 = dict["base64"] as? String,
                   let data = Data(base64Encoded: base64)
             else {
-                print("[webview-legacy-download] 收到的訊息格式不對：\(body)")
+                print("[webview-legacy-download] 收到的訊息格式不對")
                 return
             }
             let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             guard let downloadsDir else {
-                webView?.evaluateJavaScript("showToast('下載失敗：找不到下載資料夾', 'error')")
+                Self.showToast("下載失敗：找不到下載資料夾", type: "error", in: webView)
                 return
             }
-            let destination = Self.uniqueDestination(in: downloadsDir, filename: filename)
+            let destination = ShellSafety.uniqueDestination(in: downloadsDir, filename: filename)
+            guard ShellSafety.isDirectChild(destination, of: downloadsDir) else {
+                print("[webview-legacy-download] 目的地不在下載資料夾內，不寫入：\(destination.path)")
+                Self.showToast("下載失敗：檔名不合法", type: "error", in: webView)
+                return
+            }
             do {
                 try data.write(to: destination)
-                let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
-                webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
+                Self.showToast("下載完成，檔案位於 \(destination.path)", type: "success", in: webView)
             } catch {
                 print("[webview-legacy-download] 寫檔失敗：\(error)")
-                let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
-                webView?.evaluateJavaScript("showToast('\(message)', 'error')")
+                Self.showToast("下載失敗：\(error.localizedDescription)", type: "error", in: webView)
             }
         }
 
-        #if LEGACY_BUILD
         // 10.15 那包 Stage 1 的本機 OCR 入口——網頁把 PDF 轉成 base64 直接
         // postMessage 過來（見 zh-cn-to-tw-web 的 js/stages/ocr.js 的
         // runVisionOcrJob），這裡解碼、丟給 TesseractOCRManager 處理，
@@ -488,8 +627,14 @@ struct WebView: NSViewRepresentable {
                     // ——直接沿用同一套邏輯（存 token、驗證、更新 UI），系統
                     // 瀏覽器登入完成後只是換一種方式把 token 交回網頁，
                     // 後續流程完全不用另外重寫一份。
-                    let escaped = idToken.replacingOccurrences(of: "'", with: "\\'")
-                    webView.evaluateJavaScript("handleCredentialResponse({credential: '\(escaped)'})")
+                    //
+                    // token 是從本機那個 port 收進來的內容，放進 JS 之前一律
+                    // 轉成字串字面值（見 ShellSafety.javaScriptLiteral）；
+                    // GoogleDesktopSignIn 已經只放行 JWT 形狀的值，這裡是
+                    // 第二道。
+                    webView.evaluateJavaScript(
+                        "handleCredentialResponse({credential: \(ShellSafety.javaScriptLiteral(idToken))})"
+                    )
                     // 登入是在系統瀏覽器完成的，使用者這時候人在瀏覽器那邊；
                     // window.close() 不保證能關掉那個分頁（瀏覽器對非 JS
                     // 開的分頁通常會擋），所以主動把這個 App 切回前景，
@@ -501,12 +646,9 @@ struct WebView: NSViewRepresentable {
                     // 一定要通知網頁、不能只跳 alert：網頁如果是因為工作途中
                     // 登入過期才請殼登入，它正卡在「等重新登入」，只有殼回報
                     // 結果才出得來（見網頁 js/core/api.js 的
-                    // handleDesktopSignInFailed）。用 JSON 陣列包一層產生 JS
-                    // 字串字面值，錯誤訊息裡有引號也不會弄壞這段 JS。
-                    let reason = String(describing: error)
-                    let literal = (try? JSONSerialization.data(withJSONObject: [reason]))
-                        .flatMap { String(data: $0, encoding: .utf8) }
-                        .map { String($0.dropFirst().dropLast()) } ?? "\"\""
+                    // handleDesktopSignInFailed）。錯誤訊息轉成 JS 字串字面值
+                    // 再放進去，裡面有引號也不會弄壞這段 JS。
+                    let literal = ShellSafety.javaScriptLiteral(String(describing: error))
                     webView.evaluateJavaScript(
                         "window.__desktopSignInFailed ? window.__desktopSignInFailed(\(literal))"
                             + " : (window.alert && window.alert('登入失敗，請重試（' + \(literal) + '）'))"
@@ -749,19 +891,6 @@ struct WebView: NSViewRepresentable {
         // 本體裡；用到它的三個 WKDownloadDelegate 方法搬到下面 11.3+ 的
         // extension（stored property 不能宣告在 extension 裡）。
         fileprivate var downloadDestinations: [ObjectIdentifier: URL] = [:]
-
-        fileprivate static func uniqueDestination(in directory: URL, filename: String) -> URL {
-            let ext = (filename as NSString).pathExtension
-            let base = (filename as NSString).deletingPathExtension
-            var candidate = directory.appendingPathComponent(filename)
-            var suffix = 1
-            while FileManager.default.fileExists(atPath: candidate.path) {
-                let numbered = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
-                candidate = directory.appendingPathComponent(numbered)
-                suffix += 1
-            }
-            return candidate
-        }
     }
 }
 
@@ -790,12 +919,21 @@ extension WebView.Coordinator: WKDownloadDelegate {
         // 直接存到使用者的「下載項目」資料夾，跟一般瀏覽器預設行為
         // 一致，不特別跳存檔視窗；檔名如果已存在就加上流水號，避免
         // 覆蓋掉使用者之前下載的同名檔案。
+        //
+        // suggestedFilename 來自網頁（最源頭是伺服器的回應），跟
+        // legacyDownload 那條路一樣只取最後一段當檔名、再確認目的地真的
+        // 在下載資料夾這一層；不成立就取消這次下載。
         let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         guard let downloadsDir else {
             completionHandler(nil)
             return
         }
-        let destination = Self.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
+        let destination = ShellSafety.uniqueDestination(in: downloadsDir, filename: suggestedFilename)
+        guard ShellSafety.isDirectChild(destination, of: downloadsDir) else {
+            print("[webview-download] 目的地不在下載資料夾內，取消下載：\(destination.path)")
+            completionHandler(nil)
+            return
+        }
         downloadDestinations[ObjectIdentifier(download)] = destination
         completionHandler(destination)
     }
@@ -803,13 +941,11 @@ extension WebView.Coordinator: WKDownloadDelegate {
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         downloadDestinations[ObjectIdentifier(download)] = nil
         print("[webview-download] 失敗：\(error)")
-        let message = "下載失敗：\(error.localizedDescription)".replacingOccurrences(of: "'", with: "\\'")
-        download.webView?.evaluateJavaScript("showToast('\(message)', 'error')")
+        Self.showToast("下載失敗：\(error.localizedDescription)", type: "error", in: download.webView)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let destination = downloadDestinations.removeValue(forKey: ObjectIdentifier(download)) else { return }
-        let path = destination.path.replacingOccurrences(of: "'", with: "\\'")
-        download.webView?.evaluateJavaScript("showToast('下載完成，檔案位於 \(path)', 'success')")
+        Self.showToast("下載完成，檔案位於 \(destination.path)", type: "success", in: download.webView)
     }
 }

@@ -4,18 +4,20 @@ import Network
 
 /// 桌面版 Google 登入：不在 App 內嵌的 WKWebView 裡走完整個 OAuth 流程
 /// （WKWebView 不是真正的瀏覽器，Google 自己會限制/降級內嵌瀏覽器裡的
-/// 登入流程——今晚實測撞過 window.open 被擋、CSP base-uri 錯誤、
+/// 登入流程——實測撞過 window.open 被擋、CSP base-uri 錯誤、
 /// account chooser 視窗越開越多，每修一個都冒出下一個新坑）。改用系統
 /// 瀏覽器（Safari／使用者預設瀏覽器）開一個真正的分頁走完整個登入流程，
 /// 這是 Google 官方對原生桌面 App 建議的做法（RFC 8252：OAuth 2.0 for
 /// Native Apps 明講不建議用內嵌 WebView）。
 ///
 /// 流程：本機開一個一次性的 loopback HTTP 服務 -> 用系統瀏覽器開 Google
-/// 的登入網址（redirect_uri 指到這個本機服務）-> 使用者在真正的瀏覽器
-/// 分頁完成登入 -> Google 用 response_mode=form_post 把 ID Token POST
-/// 回這個本機服務 -> 解析出 token，交給呼叫端（呼叫端會透過
-/// evaluateJavaScript 把 token 塞回網頁既有的 handleCredentialResponse()，
-/// 後續驗證/儲存/UI 更新完全沿用網頁原本的邏輯，不用改後端一行程式碼。
+/// 的登入網址（redirect_uri 指到這個本機服務，並帶上這次登入專屬的
+/// state）-> 使用者在真正的瀏覽器分頁完成登入 -> Google 用
+/// response_mode=form_post 把 ID Token 連同 state POST 回這個本機服務
+/// -> 確認 state 是自己發出去的那一個、token 的形狀正確，才交給呼叫端
+/// （呼叫端會透過 evaluateJavaScript 把 token 塞回網頁既有的
+/// handleCredentialResponse()，後續驗證/儲存/UI 更新完全沿用網頁原本的
+/// 邏輯，不用改後端一行程式碼）。
 final class GoogleDesktopSignIn {
     // 刻意用固定 port，不像 ocr-service 那樣動態跟作業系統要一個空
     // port——Google Cloud Console 的「已授權的重新導向 URI」是精確字串
@@ -25,16 +27,49 @@ final class GoogleDesktopSignIn {
     private static let clientID = "415031055130-73moi9aantfm5hjojmt1r0isk2uo35mr.apps.googleusercontent.com"
     private static let timeoutSeconds: TimeInterval = 300
 
+    /// 一個請求最多收多少。Google 的回呼只有一個 ID Token 加幾個短欄位，
+    /// 兩三 KB；超過這個大小的不可能是它，不必繼續收下去。
+    static let maxRequestBytes = 64 * 1024
+    /// ID Token 的長度上限，同樣遠大於實際值（一兩 KB）。
+    static let maxTokenBytes = 16 * 1024
+
     enum SignInError: Error {
         case listenerFailed(String)
         case timedOut
         case missingToken
     }
 
+    /// 一條連線目前收到的內容，解析成哪一種狀況。
+    enum CallbackRequest: Equatable {
+        /// 還沒收完整，繼續收。
+        case incomplete
+        /// 不是 form POST（沒有 Content-Length、長度不合理、整個請求太大）。
+        case malformed
+        /// 收完整了，body 的欄位。
+        case complete(fields: [String: String])
+    }
+
+    /// 一個完整的請求要怎麼處理。
+    enum CallbackDecision: Equatable {
+        /// state 相符、ID Token 形狀正確：這次登入成功。
+        case accept(idToken: String)
+        /// state 相符但沒有可用的 token（使用者取消、Google 回報錯誤）：
+        /// 這次登入失敗，不用再等。
+        case reject
+        /// state 不符或沒帶：不是這次登入的回呼，當成沒收到，繼續等。
+        case ignore
+    }
+
+    private let openURL: (URL) -> Void
     private var listener: NWListener?
-    private var connection: NWConnection?
+    private var connections: [NWConnection] = []
     private var timeoutWorkItem: DispatchWorkItem?
     private var didFinish = false
+
+    /// openURL：怎麼把登入網址交給使用者。預設用系統瀏覽器開啟。
+    init(openURL: @escaping (URL) -> Void = { url in _ = NSWorkspace.shared.open(url) }) {
+        self.openURL = openURL
+    }
 
     func start(completion: @escaping (Result<String, SignInError>) -> Void) {
         let finish: (Result<String, SignInError>) -> Void = { [weak self] result in
@@ -67,13 +102,19 @@ final class GoogleDesktopSignIn {
         }
         self.listener = listener
 
-        listener.stateUpdateHandler = { state in
-            if case .failed(let error) = state {
+        // state 是這一次登入專屬的隨機值：放進登入網址，Google 會原樣放在
+        // 回呼裡送回來。這個 port 是固定的，同一台電腦上的其他程式、使用者
+        // 開著的其他網頁都連得到它；回呼裡的 state 跟這裡記住的一樣，才能
+        // 確定它是這次登入的結果，不是別人送進來的內容。
+        let state = Self.randomToken()
+
+        listener.stateUpdateHandler = { listenerState in
+            if case .failed(let error) = listenerState {
                 finish(.failure(.listenerFailed(error.localizedDescription)))
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
-            self?.handle(connection: connection, finish: finish)
+            self?.handle(connection: connection, expectedState: state, finish: finish)
         }
         listener.start(queue: .main)
 
@@ -85,27 +126,39 @@ final class GoogleDesktopSignIn {
             URLQueryItem(name: "response_mode", value: "form_post"),
             URLQueryItem(name: "scope", value: "openid email profile"),
             URLQueryItem(name: "nonce", value: Self.randomToken()),
-            URLQueryItem(name: "state", value: Self.randomToken()),
+            URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "prompt", value: "select_account"),
             // hl（host language）明確指定 Google 這個登入/同意畫面要用
             // 什麼語言顯示，不受瀏覽器語言設定或使用者 Google 帳號本身的
             // 語言偏好影響——實測發現不加這個，畫面預設會是英文。
             URLQueryItem(name: "hl", value: "zh-TW"),
         ]
-        NSWorkspace.shared.open(components.url!)
+        openURL(components.url!)
 
         let timeout = DispatchWorkItem { finish(.failure(.timedOut)) }
         timeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeoutSeconds, execute: timeout)
     }
 
-    private func handle(connection: NWConnection, finish: @escaping (Result<String, SignInError>) -> Void) {
-        self.connection = connection
+    private func handle(
+        connection: NWConnection,
+        expectedState: String,
+        finish: @escaping (Result<String, SignInError>) -> Void
+    ) {
+        // 不是只收第一條連線：真正的回呼之前可能先有別的連線進來（瀏覽器
+        // 預先開好的連線、其他程式或網頁送來的請求）。每一條都各自讀完、
+        // 各自判斷，只有通過檢查的那一條會結束這次登入。
+        connections.append(connection)
         connection.start(queue: .main)
-        receive(on: connection, buffer: Data(), finish: finish)
+        receive(on: connection, buffer: Data(), expectedState: expectedState, finish: finish)
     }
 
-    private func receive(on connection: NWConnection, buffer: Data, finish: @escaping (Result<String, SignInError>) -> Void) {
+    private func receive(
+        on connection: NWConnection,
+        buffer: Data,
+        expectedState: String,
+        finish: @escaping (Result<String, SignInError>) -> Void
+    ) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             var buffer = buffer
@@ -113,54 +166,125 @@ final class GoogleDesktopSignIn {
                 buffer.append(data)
             }
 
-            if let token = self.extractIDToken(from: buffer) {
-                // finish() 會呼叫 tearDown()，把這個連線 cancel 掉——一定要
-                // 等 respond() 真的把回應送出去之後才呼叫，不能緊接著同時
-                // 觸發，不然會變成兩邊搶著操作同一個連線：respond() 的
-                // send() 是非同步的，回應內容可能都還沒送達瀏覽器，
-                // tearDown() 就先把連線關了，瀏覽器那頭會看到空的回應
-                // （實測抓到：App 端 token 拿到、登入成功，但瀏覽器分頁
-                // 顯示 ERR_EMPTY_RESPONSE——token 解析在記憶體裡同步完成
-                // 不受影響，受影響的只有回應瀏覽器這一步）。
-                self.respond(on: connection, success: true) {
-                    finish(.success(token))
+            // 下面每一種「不採用」都留一行 log：登入卡住時，要能從 log 看出
+            // 是完全沒有請求進來，還是進來了但被略過。只記發生了什麼，不記
+            // 請求的內容（裡面可能有 token）。
+            switch Self.parseCallback(buffer) {
+            case .incomplete:
+                if isComplete || error != nil {
+                    // 連線結束了還湊不出一個完整的請求（瀏覽器預先開好、
+                    // 最後沒用到的連線就是這樣）。它不是回呼，放掉這一條，
+                    // 繼續等真正的那一條。
+                    print("[desktop-signin] 一條連線沒有送來完整的請求就結束，略過")
+                    self.drop(connection)
+                } else {
+                    self.receive(on: connection, buffer: buffer, expectedState: expectedState, finish: finish)
                 }
-                return
-            }
 
-            if isComplete || error != nil {
+            case .malformed:
+                print("[desktop-signin] 收到不是回呼的請求（不是 form POST 或太大），略過")
                 self.respond(on: connection, success: false) {
-                    finish(.failure(.missingToken))
+                    self.drop(connection)
                 }
-                return
-            }
 
-            self.receive(on: connection, buffer: buffer, finish: finish)
+            case .complete(let fields):
+                let decision = Self.decide(fields: fields, expectedState: expectedState)
+                switch decision {
+                case .accept:
+                    print("[desktop-signin] 收到這次登入的回呼")
+                case .reject:
+                    let reported = fields["error"].map { String($0.prefix(80)) } ?? "沒有 error 欄位"
+                    print("[desktop-signin] 這次登入的回呼沒有可用的 id_token（\(reported)；欄位：\(fields.keys.sorted())）")
+                case .ignore:
+                    print("[desktop-signin] 收到 state 不符或沒帶 state 的請求，不是這次登入的回呼，略過")
+                }
+                switch decision {
+                case .accept(let idToken):
+                    // finish() 會呼叫 tearDown()，把這個連線 cancel 掉——一定要
+                    // 等 respond() 真的把回應送出去之後才呼叫，不能緊接著同時
+                    // 觸發，不然會變成兩邊搶著操作同一個連線：respond() 的
+                    // send() 是非同步的，回應內容可能都還沒送達瀏覽器，
+                    // tearDown() 就先把連線關了，瀏覽器那頭會看到空的回應
+                    // （實測抓到：App 端 token 拿到、登入成功，但瀏覽器分頁
+                    // 顯示 ERR_EMPTY_RESPONSE——token 解析在記憶體裡同步完成
+                    // 不受影響，受影響的只有回應瀏覽器這一步）。
+                    self.respond(on: connection, success: true) {
+                        finish(.success(idToken))
+                    }
+                case .reject:
+                    self.respond(on: connection, success: false) {
+                        finish(.failure(.missingToken))
+                    }
+                case .ignore:
+                    self.respond(on: connection, success: false) {
+                        self.drop(connection)
+                    }
+                }
+            }
         }
     }
 
     /// 只處理這個一次性用途需要的最小 HTTP 解析：找 headers/body 分界、
-    /// 讀 Content-Length 對應長度的 body，從 form-urlencoded 格式解析出
-    /// id_token 欄位——不是通用 HTTP 伺服器，夠用就好。
-    private func extractIDToken(from data: Data) -> String? {
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        guard let headerEndRange = text.range(of: "\r\n\r\n") else { return nil }
+    /// 讀 Content-Length 對應長度的 body、拆出 form-urlencoded 的欄位——
+    /// 不是通用 HTTP 伺服器，夠用就好。長度一律照位元組算（Content-Length
+    /// 講的是位元組，不是字元）。
+    static func parseCallback(_ data: Data) -> CallbackRequest {
+        guard data.count <= maxRequestBytes else { return .malformed }
+        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
 
-        let headerPart = String(text[text.startIndex..<headerEndRange.lowerBound])
-        let bodyPart = String(text[headerEndRange.upperBound...])
+        let headers = String(decoding: data[data.startIndex..<headerEnd.lowerBound], as: UTF8.self)
+        guard let contentLength = contentLength(fromHeaders: headers),
+              contentLength >= 0, contentLength <= maxRequestBytes
+        else { return .malformed }
 
-        guard let contentLength = Self.contentLength(fromHeaders: headerPart) else { return nil }
-        guard bodyPart.utf8.count >= contentLength else { return nil } // body 還沒收完整，等下一輪
+        let body = data[headerEnd.upperBound...]
+        guard body.count >= contentLength else { return .incomplete } // body 還沒收完整，等下一輪
+        return .complete(fields: formFields(String(decoding: body.prefix(contentLength), as: UTF8.self)))
+    }
 
-        for pair in bodyPart.split(separator: "&") {
-            let kv = pair.split(separator: "=", maxSplits: 1)
-            guard kv.count == 2, kv[0] == "id_token" else { continue }
-            // application/x-www-form-urlencoded：+ 代表空白，要先換成空白
-            // 再做 percent-decoding，順序不能反過來。
-            let normalized = String(kv[1]).replacingOccurrences(of: "+", with: " ")
-            return normalized.removingPercentEncoding
+    static func decide(fields: [String: String], expectedState: String) -> CallbackDecision {
+        guard let state = fields["state"], state == expectedState else { return .ignore }
+        guard let idToken = fields["id_token"], isCompactJWT(idToken) else { return .reject }
+        return .accept(idToken: idToken)
+    }
+
+    /// ID Token 是 JWT：三段 base64url，中間用「.」隔開，只會有英數、
+    /// 「-」、「_」。形狀不對的一律不收——這個值接下來會交給網頁，不該讓
+    /// 任何其他字元有機會跟著進去。
+    static func isCompactJWT(_ token: String) -> Bool {
+        guard token.utf8.count <= maxTokenBytes else { return false }
+        let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count == 3 else { return false }
+        return segments.allSatisfy { segment in
+            !segment.isEmpty && segment.utf8.allSatisfy { byte in
+                (byte >= 0x30 && byte <= 0x39)      // 0-9
+                    || (byte >= 0x41 && byte <= 0x5A)   // A-Z
+                    || (byte >= 0x61 && byte <= 0x7A)   // a-z
+                    || byte == 0x2D || byte == 0x5F     // - _
+            }
         }
-        return nil
+    }
+
+    static func formFields(_ body: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard kv.count == 2,
+                  let key = decodeFormComponent(kv[0]),
+                  let value = decodeFormComponent(kv[1])
+            else { continue }
+            // 同名欄位只認第一個
+            if fields[key] == nil {
+                fields[key] = value
+            }
+        }
+        return fields
+    }
+
+    private static func decodeFormComponent(_ component: Substring) -> String? {
+        // application/x-www-form-urlencoded：+ 代表空白，要先換成空白
+        // 再做 percent-decoding，順序不能反過來。
+        String(component).replacingOccurrences(of: "+", with: " ").removingPercentEncoding
     }
 
     private static func contentLength(fromHeaders headers: String) -> Int? {
@@ -190,11 +314,17 @@ final class GoogleDesktopSignIn {
         })
     }
 
+    /// 放掉一條不是回呼的連線，監聽照常繼續。
+    private func drop(_ connection: NWConnection) {
+        connection.cancel()
+        connections.removeAll { $0 === connection }
+    }
+
     private func tearDown() {
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
-        connection?.cancel()
-        connection = nil
+        connections.forEach { $0.cancel() }
+        connections.removeAll()
         listener?.cancel()
         listener = nil
     }
