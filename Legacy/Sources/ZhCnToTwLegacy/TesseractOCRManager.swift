@@ -317,9 +317,11 @@ final class TesseractOCRManager {
         /// 正式打包的 .app 從 Resources/tesseract/ 找；`swift run` 開發模式
         /// 沒有 bundle，改用環境變數 ZHCNTOTW_TESSERACT_DIR 指到
         /// build_tesseract_10_15.sh 的成品（Legacy/.build/tesseract/current）。
+        /// 打包好的 App 不讀這個變數（見 ShellSafety.developmentOverride）：
+        /// 它能讓 App 去執行任何一個資料夾裡的 bin/tesseract。
         static func locate() throws -> Engine {
             let base: URL
-            if let override = ProcessInfo.processInfo.environment["ZHCNTOTW_TESSERACT_DIR"] {
+            if let override = ShellSafety.developmentOverride("ZHCNTOTW_TESSERACT_DIR") {
                 base = URL(fileURLWithPath: override, isDirectory: true)
             } else if let resources = Bundle.main.resourceURL {
                 base = resources.appendingPathComponent("tesseract", isDirectory: true)

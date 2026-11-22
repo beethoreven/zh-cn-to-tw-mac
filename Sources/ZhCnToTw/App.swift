@@ -78,8 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 開發模式（swift run，還沒有真正打包成 .app）：靠環境變數指到本機
         // 已經用 PyInstaller 打包好的執行檔，方便在正式做 Xcode 專案整合
-        // 之前先跑通殼本身的邏輯（subprocess 管理、WKWebView 載入）。
-        if let devPath = ProcessInfo.processInfo.environment["OCR_SERVICE_DEV_PATH"] {
+        // 之前先跑通殼本身的邏輯（subprocess 管理、WKWebView 載入）。打包
+        // 好的 App 不讀這個變數（見 ShellSafety.developmentOverride）：它能
+        // 讓 App 去執行任何一個程式。
+        if let devPath = ShellSafety.developmentOverride("OCR_SERVICE_DEV_PATH") {
             return URL(fileURLWithPath: devPath)
         }
         fatalError(

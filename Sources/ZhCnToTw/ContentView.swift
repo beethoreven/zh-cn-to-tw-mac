@@ -41,9 +41,10 @@ struct ContentView: View {
     // 也不用再啟動它了。
     //
     // WEB_BASE_URL_OVERRIDE 只在開發階段用：指到本機另外跑的網頁伺服器
-    // （例如 python3 -m http.server），測試還沒放進 bundle 的前端改動。
+    // （例如 python3 -m http.server），測試還沒放進 bundle 的前端改動。打包
+    // 好的 App 不讀（見 ShellSafety.developmentOverride）。
     private var webURL: URL? {
-        if let override = ProcessInfo.processInfo.environment["WEB_BASE_URL_OVERRIDE"],
+        if let override = ShellSafety.developmentOverride("WEB_BASE_URL_OVERRIDE"),
            let url = URL(string: override) {
             return url
         }
@@ -153,9 +154,10 @@ struct ContentView: View {
     /// 問題。
     ///
     /// WEB_API_BASE_OVERRIDE 只在開發階段用：指到本機跑的 backend
-    /// （例如 http://127.0.0.1:5001），測試還沒部署上去的後端改動。
+    /// （例如 http://127.0.0.1:5001），測試還沒部署上去的後端改動。打包好的
+    /// App 不讀（見 ShellSafety.developmentOverride），一律連正式後端。
     private var apiBase: String {
-        ProcessInfo.processInfo.environment["WEB_API_BASE_OVERRIDE"]
+        ShellSafety.developmentOverride("WEB_API_BASE_OVERRIDE")
             ?? "https://zh-cn-to-tw-backend.onrender.com"
     }
 

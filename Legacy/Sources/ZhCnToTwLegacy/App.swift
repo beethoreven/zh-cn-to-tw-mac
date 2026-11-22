@@ -172,7 +172,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func resolveOCRServiceExecutable() -> URL {
-        if let devPath = ProcessInfo.processInfo.environment["OCR_SERVICE_DEV_PATH"] {
+        // 開發用的覆寫，打包好的 App 不讀（見 ShellSafety.developmentOverride）
+        if let devPath = ShellSafety.developmentOverride("OCR_SERVICE_DEV_PATH") {
             return URL(fileURLWithPath: devPath)
         }
         return Bundle.main.resourceURL?

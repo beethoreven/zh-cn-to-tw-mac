@@ -74,6 +74,15 @@ Google 的回呼是送到本機固定的 `127.0.0.1:53682`。這個 port 同一�
 
 實測（2026-11-19，macOS 26.6.2，用真的 `WKWebView` 載入自訂 scheme 的頁面）：WebKit 對 `zhcntotw://app` 回報的來源是 scheme `zhcntotw`、主機 `app`；自己的頁面送的訊息收得到，頁面裡的 iframe、被帶到別的來源的頁面、同一份設定開出來的第二個 `WKWebView` 送的都收不到。舊版 WebKit 回報的來源如果沒有主機名稱，會退回比對 frame 自己的網址（`ShellSafety.isOwnPage`）；這條退路還沒有在真正的 macOS 10.15／11 上驗證過。
 
+### 正式安裝的 App 收起開發用入口，只打開自己的頁面
+
+- **開發用的入口只在開發版生效**：`WEB_BASE_URL_OVERRIDE`、`WEB_API_BASE_OVERRIDE`、`OCR_SERVICE_DEV_PATH`、10.15 那包的 `ZHCNTOTW_TESSERACT_DIR`，以及 Safari 的網頁檢查器（`isInspectable`），只有不是打包好的 .app 時（例如 `swift run`）才有作用（`ShellSafety.developmentOverride`、`ShellSafety.isPackagedApp`）。這些環境變數能讓 App 連到別的後端、載入別的網頁、執行別的程式；檢查器能讀到 localStorage 裡的登入 session、在頁面裡執行任意程式。不能用 `#if DEBUG` 分辨：打包腳本預設用 debug 設定編譯（`packaging/build_app_*.sh` 的 `CONFIG`），裝到使用者電腦上的 App 也可能是 debug 版。實測（2026-11-21）：同一支程式包成 .app 執行時四個變數全部被忽略，直接執行裸執行檔時都讀得到。
+- **只打開自己的頁面**：導覽只放行殼載入的那個來源（`zhcntotw://app`；開發時是 `WEB_BASE_URL_OVERRIDE` 的來源）、`about:`，以及自己頁面產生的 `blob:` 網址（`ShellSafety.isAllowedInAppNavigation`）。使用者自己點的 http(s) 連結交給系統瀏覽器，其他（頁面程式改網址、表單送出、轉址）直接擋下。原本只攔「使用者點連結到別的網域」，其他導覽都放行；這個殼沒有網址列，任何網站在這裡打開，使用者都分不出那是不是這個 App 的畫面。
+- **不開新視窗**：`window.open()` 與 `target="_blank"` 一律不在 App 裡開，使用者點的 http(s) 連結交給系統瀏覽器。新視窗是早期在內嵌 WebView 裡跑 Google 登入留下的，那時候會用同一份設定開一個新的 WKWebView；登入改走系統瀏覽器之後已經用不到。
+- 網頁本身另外有 CSP（見 `zh-cn-to-tw-web` 的 README「頁面的安全設定」）。WebKit 的 `'self'` 不認自訂 scheme，CSP 裡要明寫 `zhcntotw:`，不然 App 自己的腳本會全部被擋下。
+
+實測（2026-11-21，macOS 26.6.2，真的 WKWebView 用 `WebAssetSchemeHandler` 載入打包在 .app 裡的網頁）：App 自己的 ES module 照常執行，殼的 `evaluateJavaScript` 與頁面開始時注入的腳本不受 CSP 影響；塞進頁面的 inline script、外部 script、送往外部的圖片與 fetch 都被 CSP 擋下；頁面程式導去別的網站被擋下、`window.open` 回傳 null、沒有多出視窗；自己來源的網址照常放行。11+ 的 `WKDownload` 與 10.15 的 `legacyDownload` 照常存檔。
+
 ### 版本管控與強制更新
 
 版控走 GitHub Releases（`zh-cn-to-tw-mac` repo 底下，每個版本分流各自一個 Release，DMG 當附件掛上去，見下面「打包成 .dmg」），版本比較邏輯只用 `CFBundleShortVersionString` 的 major/minor 兩碼，不看第三碼——`ContentView.appVersionMajorMinor` 直接用 `.` 切開字串取前兩段，拆不出兩個整數就當 `0.0`（純防禦，理論上不會發生）。`desktopURL()` 組網址時把這兩個數字用 `appMajor`/`appMinor` 帶給網頁，網頁在真的要開始 Stage 1/2 工作前打 `GET /api/version_check` 問 backend 這個版本夠不夠新，過舊就擋下操作並跳窗導去更新頁（完整流程見 `zh-cn-to-tw-web` README「桌面版的強制更新檢查」、`zh-cn-to-tw-backend` README「版本檢查」）。
@@ -104,6 +113,8 @@ Google 的回呼是送到本機固定的 `127.0.0.1:53682`。這個 port 同一�
 評估時拿 5 頁實際劇本跟 `11+` 的 RapidOCR 比對（共同認出的中文字比例）：乾淨的單欄掃描 0.96–0.97，一般內頁 0.88–0.90，手機拍的歪斜跨頁只有 0.78（開「切割左右頁」也沒改善）。`tessdata_best` 品質幾乎一樣但慢 2–3 倍，所以用 fast。速度反而比 RapidOCR 快（每頁 2–6 秒 vs. 12–31 秒，同一台 Intel 開發機）。
 
 Tesseract 的 `chi_sim` 會在中文字之間插入空格，`TesseractOCRManager.cleanUp` 會拿掉中文字（含全形標點）之間的空格，英文單字之間的空格不動；半形標點不轉，Stage 2 本來就會轉。辨識完如果結果幾乎沒有中文字（中文少於兩成），會在進度紀錄裡顯示警告，不會再「看起來成功、其實整份亂碼」。
+
+網頁送來的 dpi 會先夾在 100–400 之間（跟前端 DPI 欄位、`zh-cn-to-tw-ocr-service` 的範圍一致）再交給 PDFKit 畫圖：值是網頁給的，太大會畫出一張巨大的點陣圖，一頁就能吃掉好幾 GB 記憶體。
 
 #### 10.15 那包的日誌檔
 
@@ -166,7 +177,7 @@ bash packaging/build_dmg_11_plus.sh debug   # 只打 11+ 那包
 bash packaging/build_dmg_10_15.sh debug     # 只打 10.15 那包
 ```
 
-`build_dmg_all.sh`（頂層 meta-repo 的 `build_mac_dmg.sh` 指到這支）
+`build_dmg_all.sh`（頂層 meta-repo 的 `build_mac_dmg.sh` 重建完內嵌的 OCR 服務後會呼叫這支）
 是唯一預期當成「一鍵重新 build 全部」用的入口，跟上面兩支不一樣：
 它會先重新跑 `build_app_11_plus.sh`/`build_app_10_15.sh`（swift
 build + 組裝 `.app`，含重新複製最新的網頁前端原始碼），再封裝兩包
@@ -192,7 +203,7 @@ build」的行為，給只想重新測安裝流程（原始碼沒變）的情況
 2. 準備一個暫存資料夾：放進 `.app`、一個指向 `/Applications` 的捷徑（使用者拖曳安裝用）、`packaging/dmg-readme.txt`（沒有簽章、第一次打開被 Gatekeeper 擋下來時怎麼在系統設定裡允許，兩包共用同一份說明文字）、`解除安裝.command`。
 3. 用 `hdiutil create` 把這個資料夾封裝成壓縮、唯讀的 `.dmg`（`UDZO` 格式，一般軟體發布用的就是這種）。
 
-完成後在 `dist/繁化助手-<版本>-11+.dmg`／`dist/繁化助手-<版本>-10.15.dmg`（不是 `.build/`——那是 SwiftPM 自己的中間產物目錄，Finder 預設隱藏；`dist/` 才是放真正成品的地方，跟 `zh-cn-to-tw-ocr-service` 用 `dist/` 放 PyInstaller 產出是同一個慣例），`open` 它會跟使用者實際看到的畫面一樣（掛載、跳出視窗、把 App 拖進 Applications）。頂層 meta-repo 的 `build_mac_dmg.sh`（git 追蹤的符號連結）指到 `build_dmg_all.sh`，一鍵兩包都出。
+完成後在 `dist/繁化助手-<版本>-11+.dmg`／`dist/繁化助手-<版本>-10.15.dmg`（不是 `.build/`——那是 SwiftPM 自己的中間產物目錄，Finder 預設隱藏；`dist/` 才是放真正成品的地方，跟 `zh-cn-to-tw-ocr-service` 用 `dist/` 放 PyInstaller 產出是同一個慣例），`open` 它會跟使用者實際看到的畫面一樣（掛載、跳出視窗、把 App 拖進 Applications）。頂層 meta-repo 的 `build_mac_dmg.sh` 是發布用的一鍵入口：先清掉兩包的 `.build/`，照 `requirements.txt`、`requirements-build.txt` 同步 `zh-cn-to-tw-ocr-service` 的 venv 套件（PyInstaller 包進去的是 venv 裡實際裝著的版本，不是 requirements 檔寫的版本），重新打包 OCR 服務並實際啟動一次確認 `/health` 正常，再呼叫 `build_dmg_all.sh` 兩包都出。
 
 **沒有簽章、沒有公證**——需要付費的 Apple Developer 帳號，這個專案刻意跳過，所以使用者第一次打開會被 Gatekeeper 擋下來，這是預期行為，DMG 裡的說明文字已經涵蓋怎麼處理。
 
@@ -205,12 +216,16 @@ build」的行為，給只想重新測安裝流程（原始碼沒變）的情況
 tail -f /tmp/app.log
 ```
 
-- `WebView.swift` 有把 `webView.isInspectable = true`（macOS 13.3+），可以用 Safari 的「開發」選單掛上完整 Web Inspector，看網路請求、DOM、在主控台直接下 JS 指令。
+- 用 `swift run` 執行時（不是打包好的 .app），`WebView.swift` 會把 `webView.isInspectable` 打開（macOS 13.3+），可以用 Safari 的「開發」選單掛上完整 Web Inspector，看網路請求、DOM、在主控台直接下 JS 指令。打包好的 .app 不開，理由見專案報告「正式安裝的 App 收起開發用入口」。
 
 ## 常見開發用環境變數
 
-- `WEB_BASE_URL_OVERRIDE`：不載入內嵌的 `file://` 網頁，改指到一個 URL（例如本機 `python3 -m http.server` 開的網址），方便前端開發時不用每次改完都重新打包整個 App。
+下面這些變數只有用 `swift run` 執行時（不是打包好的 .app）才有作用，打包好的 .app 一律忽略，理由見專案報告「正式安裝的 App 收起開發用入口」。開發版沒有內嵌網頁與 OCR 服務，通常三個一起設。
+
+- `WEB_BASE_URL_OVERRIDE`：不載入內嵌的網頁（`zhcntotw://app`），改指到一個 URL（例如本機 `python3 -m http.server` 開的網址），方便前端開發時不用每次改完都重新打包整個 App。
 - `WEB_API_BASE_OVERRIDE`：桌面版預設一律打正式的 Render 網址，這個變數可以覆蓋成本機 backend，測試還沒部署的後端改動。
+- `OCR_SERVICE_DEV_PATH`：指到本機用 PyInstaller 打包好的 `zh-cn-to-tw-ocr-service` 執行檔（見該 repo 的 README）。
+- `ZHCNTOTW_TESSERACT_DIR`（只有 10.15 那包）：指到 `packaging/build_tesseract_10_15.sh` 的成品（`Legacy/.build/tesseract/current`）。
 
 ---
 
@@ -288,6 +303,15 @@ The other direction gets the same care: every string the shell hands to the page
 
 Measured (2026-11-19, macOS 26.6.2, a real `WKWebView` loading pages from the custom scheme): WebKit reports the origin of `zhcntotw://app` as scheme `zhcntotw`, host `app`; messages from the shell's own page are accepted, while messages from an iframe inside it, from a page the view was navigated to on another origin, and from a second `WKWebView` created with the same configuration are all ignored. If an older WebKit reports an origin without a host, the check falls back to comparing the frame's own URL (`ShellSafety.isOwnPage`); that fallback has not yet been verified on a real macOS 10.15/11 machine.
 
+### An Installed App Keeps Developer Entry Points Closed and Opens Only Its Own Page
+
+- **Developer entry points work only in development builds**: `WEB_BASE_URL_OVERRIDE`, `WEB_API_BASE_OVERRIDE`, `OCR_SERVICE_DEV_PATH`, the 10.15 build's `ZHCNTOTW_TESSERACT_DIR`, and Safari's Web Inspector (`isInspectable`) only take effect when the app is not running from a packaged .app (e.g. `swift run`) (`ShellSafety.developmentOverride`, `ShellSafety.isPackagedApp`). These variables can make the app talk to another backend, load another page, or run another program; the inspector can read the login session in localStorage and run arbitrary code in the page. `#if DEBUG` can't tell the difference: the packaging scripts build with the debug configuration by default (`CONFIG` in `packaging/build_app_*.sh`), so an app installed on a user's machine may well be a debug build. Measured (2026-11-21): the same binary ignores all four variables when run as a .app and reads them all when run as a bare executable.
+- **Only its own page is opened**: navigation is allowed only to the origin the shell loaded (`zhcntotw://app`; during development, the origin of `WEB_BASE_URL_OVERRIDE`), `about:`, and `blob:` URLs created by the shell's own page (`ShellSafety.isAllowedInAppNavigation`). http(s) links the user clicks open in the system browser; anything else (the page's own code changing the URL, form submissions, redirects) is blocked. Previously only "the user clicking a link to another domain" was intercepted and every other navigation went through; this shell has no address bar, so with any website opened inside it the user couldn't tell whether they were still looking at this app.
+- **No new windows**: `window.open()` and `target="_blank"` never open inside the app; http(s) links the user clicks go to the system browser. New windows were left over from running Google sign-in inside an embedded WebView, which opened another WKWebView with the same configuration; since sign-in moved to the system browser they are no longer needed.
+- The page itself also has a CSP (see "Page Security Settings" in `zh-cn-to-tw-web`'s README). WebKit's `'self'` doesn't match the custom scheme, so the CSP must spell out `zhcntotw:`, or all of the app's own scripts are blocked.
+
+Measured (2026-11-21, macOS 26.6.2, a real WKWebView loading the page bundled in a .app through `WebAssetSchemeHandler`): the app's own ES modules run, and the shell's `evaluateJavaScript` and document-start injected script are unaffected by the CSP; inline scripts, external scripts, images sent outward, and fetches sent outward that are injected into the page are all blocked by the CSP; the page's code navigating to another site is blocked, `window.open` returns null and no extra window appears; URLs on the app's own origin still load. `WKDownload` on 11+ and `legacyDownload` on 10.15 still save files.
+
 ### Version Control and Forced Updates
 
 Version control goes through GitHub Releases (under the `zh-cn-to-tw-mac` repo, one Release per version tier, with the DMG as a release asset — see "Building the .dmg" below). The version-comparison logic only uses the major/minor pair from `CFBundleShortVersionString`, ignoring any third digit — `ContentView.appVersionMajorMinor` just splits the string on `.` and takes the first two segments, falling back to `0.0` if that doesn't parse into two integers (pure defensiveness, shouldn't happen in practice). `desktopURL()` passes those two numbers to the page as `appMajor`/`appMinor`; before starting any Stage 1/2 work, the page calls `GET /api/version_check` to ask the backend whether this version is still new enough, and blocks the action with a dialog pointing to the update page if not (full flow in `zh-cn-to-tw-web`'s README, "Desktop Forced-Update Check," and `zh-cn-to-tw-backend`'s README, "Version Check").
@@ -318,6 +342,8 @@ It now uses Tesseract 5.5.4 + Leptonica 1.87.0, built from source by `packaging/
 Evaluation against `11+`'s RapidOCR on 5 real script pages (share of Chinese characters both recognized): clean single-column scans 0.96–0.97, typical pages 0.88–0.90, phone-photographed skewed spreads only 0.78 ("split left/right pages" didn't help). `tessdata_best` was nearly identical but 2–3× slower, hence fast. It's actually faster than RapidOCR (2–6 s vs. 12–31 s per page on the same Intel dev machine).
 
 Tesseract's `chi_sim` inserts spaces between Chinese characters; `TesseractOCRManager.cleanUp` removes spaces between Chinese characters (including full-width punctuation) but leaves spaces between English words alone, and doesn't convert half-width punctuation since Stage 2 already does. If the result has almost no Chinese (under 20%), a warning appears in the progress log, so a run can no longer "look successful but be entirely garbled."
+
+The dpi sent by the page is clamped to 100–400 (the same range as the frontend's DPI field and `zh-cn-to-tw-ocr-service`) before PDFKit renders with it: the value comes from the page, and a huge one would render an enormous bitmap — a single page could eat several GB of memory.
 
 #### The 10.15 build's log file
 
@@ -380,8 +406,8 @@ bash packaging/build_dmg_11_plus.sh debug   # 11+ only
 bash packaging/build_dmg_10_15.sh debug     # 10.15 only
 ```
 
-`build_dmg_all.sh` (the top-level meta-repo's `build_mac_dmg.sh` points
-here) is the only entry point meant to be used as "rebuild everything
+`build_dmg_all.sh` (the top-level meta-repo's `build_mac_dmg.sh` calls it
+after rebuilding the embedded OCR service) is the only entry point meant to be used as "rebuild everything
 in one command" — unlike the two above, it re-runs
 `build_app_11_plus.sh`/`build_app_10_15.sh` first (swift build +
 re-assembling the `.app`, including a fresh copy of the web frontend
@@ -411,7 +437,7 @@ This does:
 2. Prepares a staging folder: the `.app`, a symlink to `/Applications` (the drag target users see), `packaging/dmg-readme.txt` (how to allow the app in System Settings when Gatekeeper blocks first launch, shared by both), and `解除安裝.command`.
 3. Packages that folder into a compressed, read-only `.dmg` with `hdiutil create` (`UDZO` format — the standard one used for shipping software).
 
-The result lands at `dist/繁化助手-<version>-11+.dmg` / `dist/繁化助手-<version>-10.15.dmg` (not `.build/` — that's SwiftPM's own intermediate-artifact directory, hidden by Finder by default; `dist/` is where the actual shippable output goes, the same convention `zh-cn-to-tw-ocr-service` uses for its PyInstaller output); `open`ing it shows exactly what an end user would see. The top-level meta-repo's `build_mac_dmg.sh` (a git-tracked symlink) points at `build_dmg_all.sh`, building both in one shot.
+The result lands at `dist/繁化助手-<version>-11+.dmg` / `dist/繁化助手-<version>-10.15.dmg` (not `.build/` — that's SwiftPM's own intermediate-artifact directory, hidden by Finder by default; `dist/` is where the actual shippable output goes, the same convention `zh-cn-to-tw-ocr-service` uses for its PyInstaller output); `open`ing it shows exactly what an end user would see. The top-level meta-repo's `build_mac_dmg.sh` is the one-command entry point for releases: it clears both packages' `.build/`, syncs `zh-cn-to-tw-ocr-service`'s venv with `requirements.txt` and `requirements-build.txt` (PyInstaller bundles the versions actually installed in the venv, not the ones the requirements files name), re-packages the OCR service and starts it once to confirm `/health` responds, then calls `build_dmg_all.sh` to build both.
 
 **No code signing, no notarization** — that needs a paid Apple Developer account, which this project deliberately skips, so users get blocked by Gatekeeper on first launch. That's expected; the bundled readme text already covers what to do about it.
 
@@ -424,9 +450,13 @@ The result lands at `dist/繁化助手-<version>-11+.dmg` / `dist/繁化助手-<
 tail -f /tmp/app.log
 ```
 
-- `WebView.swift` sets `webView.isInspectable = true` (macOS 13.3+), so Safari's Develop menu can attach the full Web Inspector — network requests, the DOM, and a live JS console.
+- When run via `swift run` (not a packaged .app), `WebView.swift` turns on `webView.isInspectable` (macOS 13.3+), so Safari's Develop menu can attach the full Web Inspector — network requests, the DOM, and a live JS console. A packaged .app doesn't; see "An Installed App Keeps Developer Entry Points Closed" in the Project Report.
 
 ## Useful Dev-Time Environment Variables
 
-- `WEB_BASE_URL_OVERRIDE`: skip loading the embedded `file://` page and point at a URL instead (e.g. a local `python3 -m http.server`), so frontend changes don't require rebuilding the whole app every time.
+These variables only take effect when running via `swift run` (not a packaged .app); a packaged .app ignores them all — see "An Installed App Keeps Developer Entry Points Closed" in the Project Report. A development build has no bundled page or OCR service, so the first three are usually set together.
+
+- `WEB_BASE_URL_OVERRIDE`: skip loading the embedded page (`zhcntotw://app`) and point at a URL instead (e.g. a local `python3 -m http.server`), so frontend changes don't require rebuilding the whole app every time.
 - `WEB_API_BASE_OVERRIDE`: the desktop build always hits the production Render URL by default; this overrides it to a local backend for testing not-yet-deployed backend changes.
+- `OCR_SERVICE_DEV_PATH`: points at a locally PyInstaller-built `zh-cn-to-tw-ocr-service` executable (see that repo's README).
+- `ZHCNTOTW_TESSERACT_DIR` (10.15 build only): points at the output of `packaging/build_tesseract_10_15.sh` (`Legacy/.build/tesseract/current`).

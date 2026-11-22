@@ -124,6 +124,57 @@ enum ShellSafety {
         )
     }
 
+    /// url 跟 pageURL 是不是同一個來源（scheme、主機、port 都相同）。
+    static func isSameOrigin(_ url: URL, as pageURL: URL) -> Bool {
+        sameOrigin(scheme: url.scheme ?? "", host: url.host ?? "", port: url.port ?? 0, as: pageURL)
+    }
+
+    /// 這個網址能不能在 App 的視窗裡打開：自己頁面的來源、about:（空白頁），
+    /// 或是自己頁面產生的 blob: 網址（blob:zhcntotw://app/... 這種，來源寫在
+    /// blob: 後面）。其他網站一律不能在 App 裡打開——App 沒有網址列，使用者
+    /// 分不出自己看到的是不是這個 App 的畫面。
+    static func isAllowedInAppNavigation(_ url: URL, pageURL: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "about":
+            return true
+        case "blob":
+            let inner = String(url.absoluteString.dropFirst("blob:".count))
+            guard let innerURL = URL(string: inner) else { return false }
+            return isSameOrigin(innerURL, as: pageURL)
+        default:
+            return isSameOrigin(url, as: pageURL)
+        }
+    }
+
+    /// 可以交給系統瀏覽器開的網址（只收 http、https）。
+    static func isWebURL(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased()
+        return scheme == "http" || scheme == "https"
+    }
+
+    /// 是不是從打包好的 .app 執行（使用者安裝的 App）。開發時用 `swift run`
+    /// 執行的是 .build/ 底下的執行檔本身，bundleURL 不是 .app。
+    ///
+    /// 開發用的入口（下面的 developmentOverride、網頁檢查器）只在不是打包好的
+    /// App 時才開。不能用 #if DEBUG 分辨：打包腳本預設用 debug 設定編譯（見
+    /// packaging/build_app_11_plus.sh 的 CONFIG），裝到使用者電腦上的 App 也
+    /// 可能是 debug 版。
+    static var isPackagedApp: Bool {
+        Bundle.main.bundleURL.pathExtension.lowercased() == "app"
+    }
+
+    /// 開發用的環境變數（例如 WEB_API_BASE_OVERRIDE）：只有不是打包好的 App
+    /// 才讀，打包好的 App 一律當作沒設。這些變數能讓 App 連到別的後端、載入
+    /// 別的網頁、執行別的程式，對裝好的 App 來說等於多一個讓別人改變它行為的
+    /// 入口。
+    static func developmentOverride(_ name: String) -> String? {
+        guard !isPackagedApp,
+              let value = ProcessInfo.processInfo.environment[name],
+              !value.isEmpty
+        else { return nil }
+        return value
+    }
+
     private static func sameOrigin(scheme: String, host: String, port: Int, as pageURL: URL) -> Bool {
         guard let pageScheme = pageURL.scheme?.lowercased(), !pageScheme.isEmpty else { return false }
         let scheme = scheme.lowercased()
@@ -300,8 +351,11 @@ struct WebView: NSViewRepresentable {
         // console 轉送橋接看得更完整——console 轉送完全沒訊息時，代表
         // 問題可能更底層（例如某個 iframe 根本沒載入成功），需要這個
         // 才能繼續往下查。macOS 13.3 以上才有這個 API。
+        //
+        // 打包好的 App 不開：檢查器能讀到 localStorage 裡的登入 session、
+        // 在頁面裡執行任意程式，同一台電腦上的其他人或程式都能接上去。
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            webView.isInspectable = !ShellSafety.isPackagedApp
         }
 
         webView.uiDelegate = context.coordinator
@@ -393,14 +447,6 @@ struct WebView: NSViewRepresentable {
         /// 要主動把頁面上的值清成 null，不然網頁會拿著一個已經沒人在聽的
         /// port 一直重試。光看 pushedPort 是不是 nil 沒辦法分辨這兩種情況。
         private var hasPushedAnyValue = false
-
-        // Google 登入用 window.open() 開一個彈出視窗跑 OAuth 流程，但
-        // WKWebView 預設完全不處理 window.open()——瀏覽器都有內建的彈出
-        // 視窗處理邏輯，WKWebView 沒有，不實作這個 delegate 方法的話
-        // window.open() 在 JS 那端就直接失敗，Google 的 SDK 會印出
-        // "Failed to open popup window... Maybe blocked by the browser?"。
-        // 這裡持有已開啟的彈出視窗，避免視窗物件被提早釋放掉。
-        private var popupWindows: [NSWindow] = []
 
         /// 把最新的 port 寫進頁面的 window.__OCR_PORT__（見 zh-cn-to-tw-web
         /// 的 script.js 的 desktopOcrBase()）。刻意不重新載入頁面——服務自己
@@ -597,7 +643,10 @@ struct WebView: NSViewRepresentable {
                 print("[webview-vision-ocr] 收到的訊息格式不對：\(body)")
                 return
             }
-            let dpi = (dict["dpi"] as? Int) ?? 200
+            // dpi 夾在前端 DPI 欄位的範圍內（zh-cn-to-tw-backend 的 DPI_MIN／
+            // DPI_MAX）：值是網頁給的，太大會讓 PDFKit 畫出一張巨大的點陣圖，
+            // 一頁就能吃掉好幾 GB 記憶體
+            let dpi = min(max((dict["dpi"] as? Int) ?? 200, 100), 400)
             let detectCover = (dict["detectCover"] as? Bool) ?? true
             let splitLeftRight = (dict["splitLeftRight"] as? Bool) ?? false
 
@@ -674,62 +723,34 @@ struct WebView: NSViewRepresentable {
             }
         }
 
+        // 網頁要開新視窗（window.open()、target="_blank" 的連結）時，一律不在
+        // App 裡開：使用者自己點的 http(s) 連結交給系統瀏覽器，其他直接忽略。
+        // 早期在內嵌 WebView 裡跑 Google 登入時需要彈出視窗，那時候這裡會用
+        // 同一份設定開一個新的 WKWebView；登入改走系統瀏覽器之後已經用不到，
+        // 留著只是讓任何網址都能在 App 的視窗裡顯示（App 沒有網址列，使用者
+        // 分不出那是不是這個 App 的畫面）。
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            // 一定要用傳進來的同一個 configuration 物件（不能自己另外造
-            // 一個新的）——window.opener/postMessage 這種跨視窗溝通機制
-            // 靠的就是這個共用的 configuration/process pool，用不同的
-            // configuration 建立的視窗，Google 的 SDK 完成登入後會沒辦法
-            // 把結果傳回原本那個視窗。
-            let popupWebView = WKWebView(frame: NSRect(x: 0, y: 0, width: 480, height: 640), configuration: configuration)
-            popupWebView.uiDelegate = self
-            if #available(macOS 13.3, *) {
-                popupWebView.isInspectable = true
+            if navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url,
+               ShellSafety.isWebURL(url) {
+                NSWorkspace.shared.open(url)
+            } else {
+                print("[webview-nav] 不開新視窗：\(navigationAction.request.url?.scheme ?? "(nil)")")
             }
-
-            let window = NSWindow(
-                contentRect: popupWebView.frame,
-                styleMask: [.titled, .closable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "登入"
-            window.contentView = popupWebView
-            // 這個視窗是我們自己手動 alloc/init 出來、用 popupWindows 陣列
-            // 以 ARC 管理生命週期的，不是透過 NSWindowController；一定要
-            // 關掉 isReleasedWhenClosed（預設是 true），不然 AppKit 自己
-            // 在 close() 時也會嘗試釋放這個視窗物件，兩邊都想釋放同一個
-            // 物件，會在關閉動畫收尾、autorelease pool 清理時把它重複
-            // 釋放掉，變成存取已經被釋放的記憶體，直接讓整個 App crash
-            // （實測抓到：EXC_BAD_ACCESS 在
-            // -[_NSWindowTransformAnimation dealloc]，正是這個典型問題）。
-            window.isReleasedWhenClosed = false
-            window.center()
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-
-            popupWindows.append(window)
-            return popupWebView
-        }
-
-        // Google 的登入流程跑完後，彈出視窗那邊的 JS 會呼叫 window.close()
-        // 把自己關掉（跟一般瀏覽器完成 OAuth popup 流程後的行為一樣）。
-        func webViewDidClose(_ webView: WKWebView) {
-            guard let index = popupWindows.firstIndex(where: { $0.contentView === webView }) else { return }
-            popupWindows[index].close()
-            popupWindows.remove(at: index)
+            return nil
         }
 
         // <input type="file"> 點下去要跳出真正的檔案選擇視窗，在 macOS
-        // 上一旦 WKWebView 有設定 uiDelegate（我們因為上面的登入彈出視窗
-        // 需要，一定要設），內建的檔案選擇行為就不會自動生效，一定要自己
-        // 實作這個方法用 NSOpenPanel 接手，不然點擊完全沒反應（這個操作
-        // 本來就不會有任何 console 訊息，不管有沒有正常運作都一樣，不是
-        // 判斷依據）。
+        // 上一旦 WKWebView 有設定 uiDelegate（我們為了上面擋掉新視窗、下面
+        // 的 alert 對話框需要，一定要設），內建的檔案選擇行為就不會自動
+        // 生效，一定要自己實作這個方法用 NSOpenPanel 接手，不然點擊完全
+        // 沒反應（這個操作本來就不會有任何 console 訊息，不管有沒有正常
+        // 運作都一樣，不是判斷依據）。
         func webView(
             _ webView: WKWebView,
             runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -822,12 +843,10 @@ struct WebView: NSViewRepresentable {
         // 選擇按鈕、登入彈出視窗是同一種「WKWebView 沒有瀏覽器內建行為，
         // 要自己實作對應 delegate 方法」的問題）。
         //
-        // 另外：這個殼沒有網址列、沒有上一頁按鈕，如果頁面上出現連到
-        // 別的網域的連結（目前 index.html 裡沒有，但之後可能會加，例如
-        // 說明文件連結），使用者點下去如果讓這個 WebView 直接導覽過去，
-        // 會被困在別的網站、沒有正常方式回到 App 本身——改成偵測到
-        // 「使用者點擊連結」且目標網域跟目前頁面不同時，改用系統瀏覽器
-        // 開啟，這個 WebView 本身留在原地不動。
+        // 另外：這個殼沒有網址列、沒有上一頁按鈕，任何不是自己頁面來源的
+        // 網址都不在這個 WebView 裡打開——使用者會被困在別的網站、也分不出
+        // 自己看到的是不是這個 App 的畫面。使用者自己點的 http(s) 連結改用
+        // 系統瀏覽器開，其他（頁面程式改網址、表單送出、轉址）直接擋下。
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
@@ -843,16 +862,24 @@ struct WebView: NSViewRepresentable {
                 decisionHandler(.download)
                 return
             }
-            if navigationAction.navigationType == .linkActivated,
-               let targetURL = navigationAction.request.url,
-               let targetHost = targetURL.host,
-               let currentHost = webView.url?.host,
-               targetHost != currentHost {
-                NSWorkspace.shared.open(targetURL)
+            // 只放行自己頁面的來源（見 ShellSafety.isAllowedInAppNavigation）。
+            // 原本只攔「使用者點連結到別的網域」，頁面自己的程式改網址、表單
+            // 送出、轉址都會放行，等於任何網站都能在 App 的視窗裡打開。
+            guard let targetURL = navigationAction.request.url else {
                 decisionHandler(.cancel)
                 return
             }
-            decisionHandler(.allow)
+            if let pageURL = lastURL, ShellSafety.isAllowedInAppNavigation(targetURL, pageURL: pageURL) {
+                decisionHandler(.allow)
+                return
+            }
+            if navigationAction.navigationType == .linkActivated, ShellSafety.isWebURL(targetURL) {
+                // 使用者自己點的連結：交給系統瀏覽器開，這個 WebView 留在原地
+                NSWorkspace.shared.open(targetURL)
+            } else {
+                print("[webview-nav] 擋下導覽到其他來源：\(targetURL.scheme ?? "(nil)")://\(targetURL.host ?? "")")
+            }
+            decisionHandler(.cancel)
         }
 
         // 這三個原本完全沒實作——load(url:) 呼叫 loadFileURL 之後，如果
