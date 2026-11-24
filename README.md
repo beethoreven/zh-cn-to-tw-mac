@@ -52,7 +52,7 @@ App 啟動時**不會**主動啟動 OCR 服務（見下方「OCR 服務生命週
 
 - **v1**：App 啟動就拉起 OCR 服務，整個執行期間開著。
 - **v2**：加「閒置 30 分鐘自我關閉」+「健康檢查每 30 秒發現沒在跑就重新拉起」——兩個機制互相打架，關掉沒多久又被拉起來，記憶體從沒真的被回收過。
-- **v3（目前）**：完全交給網頁前端主動控制。`WebView.swift` 註冊一個 `ocrService` 的 `WKScriptMessageHandler`，`script.js` 在真的要送 PDF 之前才發 `{action: "start"}`，OCR 階段結束（不管成功失敗）就發 `{action: "stop"}`。App 啟動時完全不主動開它。
+- **v3（目前）**：完全交給網頁前端主動控制。`WebView.swift` 註冊一個 `ocrService` 的 `WKScriptMessageHandler`，`zh-cn-to-tw-web` 的 `js/stages/ocr.js` 在真的要送 PDF 之前才發 `{action: "start"}`，OCR 階段結束（不管成功失敗）就發 `{action: "stop"}`。App 啟動時完全不主動開它。
 
 搭配的還有 port 通知機制：服務起來/關掉時，`OCRServiceManager` 會把最新的 port（或 `null`）透過 `WKWebView.evaluateJavaScript` 直接寫進網頁的 `window.__OCR_PORT__`，**刻意不透過改網址查詢參數再重新載入頁面**（那樣會清掉使用者填到一半的表單狀態）。
 
@@ -156,7 +156,7 @@ bash packaging/build_app_10_15.sh debug     # macOS 10.15 那包（內嵌 Tesser
 1. `swift build`（`11+` 用根目錄的 `Package.swift`，`10.15` 用 `--package-path Legacy`）編出裸執行檔。
 2. 組出 `.app` bundle 結構（對應的 `Info.plist`/`Info-10-15.plist`、圖示）。
 3. `11+` 那包複製 `../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service/` 整個目錄進 `Resources/ocr-service/`（可用 `OCR_SERVICE_DIST_DIR` 環境變數覆蓋路徑）；`10.15` 那包不需要這一步。
-4. 複製 `../zh-cn-to-tw-web/` 的 `index.html`/`script.js`/`style.css`/`favicon.png` 進 `Resources/web/`（可用 `WEB_SRC_DIR` 環境變數覆蓋路徑）——兩包用同一份網頁原始碼，讀的是 `zh-cn-to-tw-web` 的 `main` 分支，跟 GitHub Pages 服務的 `update-page` 分支無關（見該 repo README）。
+4. 複製 `../zh-cn-to-tw-web/` 的 `index.html` 與 `assets/`、`css/`、`js/` 三個資料夾進 `Resources/web/`（可用 `WEB_SRC_DIR` 環境變數覆蓋路徑；缺任何一個就中止打包，少了 App 會整頁空白）——兩包用同一份網頁原始碼，讀的是 `zh-cn-to-tw-web` 的 `main` 分支，跟 GitHub Pages 服務的 `update-page` 分支無關（見該 repo README）。
 
 完成後：
 
@@ -281,7 +281,7 @@ This evolved alongside the frontend discussion through a few iterations:
 
 - **v1**: the app started the OCR service at launch and kept it running for the whole session.
 - **v2**: added "self-shutdown after 30 minutes idle" plus "a health check every 30 seconds that respawns it if it's not running" — the two fought each other, respawning shortly after every shutdown, so memory was never actually reclaimed.
-- **v3 (current)**: control is handed entirely to the web frontend. `WebView.swift` registers an `ocrService` `WKScriptMessageHandler`; `script.js` sends `{action: "start"}` right before it actually needs to send a PDF, and `{action: "stop"}` once the OCR step ends (success or failure). The app never starts it proactively at launch.
+- **v3 (current)**: control is handed entirely to the web frontend. `WebView.swift` registers an `ocrService` `WKScriptMessageHandler`; `zh-cn-to-tw-web`'s `js/stages/ocr.js` sends `{action: "start"}` right before it actually needs to send a PDF, and `{action: "stop"}` once the OCR step ends (success or failure). The app never starts it proactively at launch.
 
 Paired with this is a port-notification mechanism: whenever the service starts or stops, `OCRServiceManager` pushes the current port (or `null`) straight into the page's `window.__OCR_PORT__` via `WKWebView.evaluateJavaScript` — **deliberately not** via a URL query parameter plus a page reload, which would wipe out whatever the user had half-filled into a form.
 
@@ -385,7 +385,7 @@ Each does:
 1. `swift build` (`11+` uses the root `Package.swift`; `10.15` uses `--package-path Legacy`) to compile the bare executable.
 2. Assembles the `.app` bundle structure (the matching `Info.plist`/`Info-10-15.plist`, icon).
 3. The `11+` build copies the entire `../zh-cn-to-tw-ocr-service/dist/zh-cn-to-tw-ocr-service/` directory into `Resources/ocr-service/` (override path via `OCR_SERVICE_DIST_DIR`); the `10.15` build skips this step.
-4. Copies `../zh-cn-to-tw-web/`'s `index.html`/`script.js`/`style.css`/`favicon.png` into `Resources/web/` (override path via `WEB_SRC_DIR`) — both builds share the same web source, reading `zh-cn-to-tw-web`'s `main` branch, unrelated to the `update-page` branch GitHub Pages serves (see that repo's README).
+4. Copies `../zh-cn-to-tw-web/`'s `index.html` and its `assets/`, `css/`, `js/` folders into `Resources/web/` (override path via `WEB_SRC_DIR`; if any is missing the build stops, since the app would open to a blank page) — both builds share the same web source, reading `zh-cn-to-tw-web`'s `main` branch, unrelated to the `update-page` branch GitHub Pages serves (see that repo's README).
 
 Then:
 
