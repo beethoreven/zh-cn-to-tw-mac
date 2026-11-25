@@ -9,13 +9,17 @@ final class OCRServiceManager: ObservableObject {
 
     let token: String = OCRServiceManager.generateToken()
 
-    // 啟動逾時 + 重試：全部都在本機跑，正常情況下 process 起來、綁好
-    // port、印出那一行，應該是秒等級的事——如果等超過這個時間還沒拿到
-    // port，代表這次啟動大概率是卡住了（不是「還在跑只是比較慢」），
-    // 直接強制關掉重來，不要無止盡等下去，也不要讓使用者永遠卡在
-    // 「本機 OCR 服務啟動中」那個讀取畫面卻不知道發生什麼事。
-    private static let startupTimeoutSeconds: TimeInterval = 20
-    private static let maxStartupAttempts = 3
+    // 啟動逾時 + 重試：等太久還沒拿到 port 就強制關掉重來，不要無止盡
+    // 等下去，也不要讓使用者永遠卡在「本機 OCR 服務啟動中」那個讀取畫面
+    // 卻不知道發生什麼事。
+    //
+    // 但門檻不能設成「本機服務應該幾秒就好」：裝好之後第一次啟動，macOS
+    // 會先逐一檢查內嵌的每個執行檔與函式庫（OCR 服務有一百多個），檢查完
+    // 有快取，之後就快了。實測（Intel Mac，複製到新位置後第一次執行）：
+    // 2.2 的打包結果 49 秒、2.3 的 79 秒，第二次都不到 2 秒。原本的 20 秒
+    // 會在檢查途中把它關掉，使用者第一次用 Stage 1 就看到啟動逾時。
+    private static let startupTimeoutSeconds: TimeInterval = 180
+    private static let maxStartupAttempts = 2
 
     private let executableURL: URL
     private var process: Process?
