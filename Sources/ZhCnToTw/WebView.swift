@@ -155,12 +155,20 @@ enum ShellSafety {
     /// 是不是從打包好的 .app 執行（使用者安裝的 App）。開發時用 `swift run`
     /// 執行的是 .build/ 底下的執行檔本身，bundleURL 不是 .app。
     ///
-    /// 開發用的入口（下面的 developmentOverride、網頁檢查器）只在不是打包好的
-    /// App 時才開。不能用 #if DEBUG 分辨：打包腳本預設用 debug 設定編譯（見
-    /// packaging/build_app_11_plus.sh 的 CONFIG），裝到使用者電腦上的 App 也
-    /// 可能是 debug 版。
     static var isPackagedApp: Bool {
         Bundle.main.bundleURL.pathExtension.lowercased() == "app"
+    }
+
+    /// 開發用的入口（下面的 developmentOverride、網頁檢查器）開不開。兩道
+    /// 條件：release 編譯一律關（打包腳本預設用 release，發布的 App 裡根本
+    /// 沒有打開它們的程式路徑）；debug 編譯也只在不是打包好的 App（例如
+    /// `swift run`）時才開，萬一有人用 debug 設定打包，裝好的 App 照樣關著。
+    static var developmentEntriesEnabled: Bool {
+        #if DEBUG
+        return !isPackagedApp
+        #else
+        return false
+        #endif
     }
 
     /// 開發用的環境變數（例如 WEB_API_BASE_OVERRIDE）：只有不是打包好的 App
@@ -168,7 +176,7 @@ enum ShellSafety {
     /// 別的網頁、執行別的程式，對裝好的 App 來說等於多一個讓別人改變它行為的
     /// 入口。
     static func developmentOverride(_ name: String) -> String? {
-        guard !isPackagedApp,
+        guard developmentEntriesEnabled,
               let value = ProcessInfo.processInfo.environment[name],
               !value.isEmpty
         else { return nil }
@@ -355,7 +363,7 @@ struct WebView: NSViewRepresentable {
         // 打包好的 App 不開：檢查器能讀到 localStorage 裡的登入 session、
         // 在頁面裡執行任意程式，同一台電腦上的其他人或程式都能接上去。
         if #available(macOS 13.3, *) {
-            webView.isInspectable = !ShellSafety.isPackagedApp
+            webView.isInspectable = ShellSafety.developmentEntriesEnabled
         }
 
         webView.uiDelegate = context.coordinator

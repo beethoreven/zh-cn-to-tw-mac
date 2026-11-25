@@ -76,7 +76,7 @@ Google 的回呼是送到本機固定的 `127.0.0.1:53682`。這個 port 同一�
 
 ### 正式安裝的 App 收起開發用入口，只打開自己的頁面
 
-- **開發用的入口只在開發版生效**：`WEB_BASE_URL_OVERRIDE`、`WEB_API_BASE_OVERRIDE`、`OCR_SERVICE_DEV_PATH`、10.15 那包的 `ZHCNTOTW_TESSERACT_DIR`，以及 Safari 的網頁檢查器（`isInspectable`），只有不是打包好的 .app 時（例如 `swift run`）才有作用（`ShellSafety.developmentOverride`、`ShellSafety.isPackagedApp`）。這些環境變數能讓 App 連到別的後端、載入別的網頁、執行別的程式；檢查器能讀到 localStorage 裡的登入 session、在頁面裡執行任意程式。不能用 `#if DEBUG` 分辨：打包腳本預設用 debug 設定編譯（`packaging/build_app_*.sh` 的 `CONFIG`），裝到使用者電腦上的 App 也可能是 debug 版。實測（2026-11-21）：同一支程式包成 .app 執行時四個變數全部被忽略，直接執行裸執行檔時都讀得到。
+- **開發用的入口只在開發版生效**：`WEB_BASE_URL_OVERRIDE`、`WEB_API_BASE_OVERRIDE`、`OCR_SERVICE_DEV_PATH`、10.15 那包的 `ZHCNTOTW_TESSERACT_DIR`，以及 Safari 的網頁檢查器（`isInspectable`），只在 debug 編譯、而且不是打包好的 .app 時（例如 `swift run`）才有作用（`ShellSafety.developmentEntriesEnabled`）。這些環境變數能讓 App 連到別的後端、載入別的網頁、執行別的程式；檢查器能讀到 localStorage 裡的登入 session、在頁面裡執行任意程式。兩道條件：打包腳本預設用 release 設定編譯（`packaging/build_app_*.sh` 的 `CONFIG`），release 版裡根本沒有打開這些入口的程式路徑；萬一有人用 debug 設定打包，「是不是 .app」的執行期判斷照樣把它們關掉。實測（2026-11-21，當時只有執行期判斷）：同一支程式包成 .app 執行時四個變數全部被忽略，直接執行裸執行檔時都讀得到。
 - **只打開自己的頁面**：導覽只放行殼載入的那個來源（`zhcntotw://app`；開發時是 `WEB_BASE_URL_OVERRIDE` 的來源）、`about:`，以及自己頁面產生的 `blob:` 網址（`ShellSafety.isAllowedInAppNavigation`）。使用者自己點的 http(s) 連結交給系統瀏覽器，其他（頁面程式改網址、表單送出、轉址）直接擋下。原本只攔「使用者點連結到別的網域」，其他導覽都放行；這個殼沒有網址列，任何網站在這裡打開，使用者都分不出那是不是這個 App 的畫面。
 - **不開新視窗**：`window.open()` 與 `target="_blank"` 一律不在 App 裡開，使用者點的 http(s) 連結交給系統瀏覽器。新視窗是早期在內嵌 WebView 裡跑 Google 登入留下的，那時候會用同一份設定開一個新的 WKWebView；登入改走系統瀏覽器之後已經用不到。
 - 網頁本身另外有 CSP（見 `zh-cn-to-tw-web` 的 README「頁面的安全設定」）。WebKit 的 `'self'` 不認自訂 scheme，CSP 裡要明寫 `zhcntotw:`，不然 App 自己的腳本會全部被擋下。
@@ -147,8 +147,8 @@ Tesseract 的 `chi_sim` 會在中文字之間插入空格，`TesseractOCRManager
 
 ```bash
 cd zh-cn-to-tw-mac
-bash packaging/build_app_11_plus.sh debug   # macOS 11+ 那包
-bash packaging/build_app_10_15.sh debug     # macOS 10.15 那包（內嵌 Tesseract OCR）
+bash packaging/build_app_11_plus.sh release   # macOS 11+ 那包
+bash packaging/build_app_10_15.sh release     # macOS 10.15 那包（內嵌 Tesseract OCR）
 ```
 
 各自會做這些事：
@@ -173,8 +173,8 @@ open Legacy/.build/繁化助手.app       # 10.15（兩包分開放在各自 pac
 才有東西可以包：
 
 ```bash
-bash packaging/build_dmg_11_plus.sh debug   # 只打 11+ 那包
-bash packaging/build_dmg_10_15.sh debug     # 只打 10.15 那包
+bash packaging/build_dmg_11_plus.sh release   # 只打 11+ 那包
+bash packaging/build_dmg_10_15.sh release     # 只打 10.15 那包
 ```
 
 `build_dmg_all.sh`（頂層 meta-repo 的 `build_mac_dmg.sh` 重建完內嵌的 OCR 服務後會呼叫這支）
@@ -184,7 +184,7 @@ build + 組裝 `.app`，含重新複製最新的網頁前端原始碼），再�
 DMG，保證原始碼一有改動，這個指令的輸出就一定跟著更新：
 
 ```bash
-bash packaging/build_dmg_all.sh debug       # 從 swift build 到兩包 DMG，一次做完
+bash packaging/build_dmg_all.sh release       # 從 swift build 到兩包 DMG，一次做完
 ```
 
 **這是實測撞過的教訓**：`build_dmg_all.sh` 曾經也只是依序呼叫上面
@@ -305,7 +305,7 @@ Measured (2026-11-19, macOS 26.6.2, a real `WKWebView` loading pages from the cu
 
 ### An Installed App Keeps Developer Entry Points Closed and Opens Only Its Own Page
 
-- **Developer entry points work only in development builds**: `WEB_BASE_URL_OVERRIDE`, `WEB_API_BASE_OVERRIDE`, `OCR_SERVICE_DEV_PATH`, the 10.15 build's `ZHCNTOTW_TESSERACT_DIR`, and Safari's Web Inspector (`isInspectable`) only take effect when the app is not running from a packaged .app (e.g. `swift run`) (`ShellSafety.developmentOverride`, `ShellSafety.isPackagedApp`). These variables can make the app talk to another backend, load another page, or run another program; the inspector can read the login session in localStorage and run arbitrary code in the page. `#if DEBUG` can't tell the difference: the packaging scripts build with the debug configuration by default (`CONFIG` in `packaging/build_app_*.sh`), so an app installed on a user's machine may well be a debug build. Measured (2026-11-21): the same binary ignores all four variables when run as a .app and reads them all when run as a bare executable.
+- **Developer entry points work only in development builds**: `WEB_BASE_URL_OVERRIDE`, `WEB_API_BASE_OVERRIDE`, `OCR_SERVICE_DEV_PATH`, the 10.15 build's `ZHCNTOTW_TESSERACT_DIR`, and Safari's Web Inspector (`isInspectable`) only take effect in a debug build that is not running from a packaged .app (e.g. `swift run`) (`ShellSafety.developmentEntriesEnabled`). These variables can make the app talk to another backend, load another page, or run another program; the inspector can read the login session in localStorage and run arbitrary code in the page. Two conditions: the packaging scripts build with the release configuration by default (`CONFIG` in `packaging/build_app_*.sh`), and a release build has no code path that turns these on at all; if someone packages a debug build anyway, the runtime "is this a .app" check still turns them off. Measured (2026-11-21, when only the runtime check existed): the same binary ignores all four variables when run as a .app and reads them all when run as a bare executable.
 - **Only its own page is opened**: navigation is allowed only to the origin the shell loaded (`zhcntotw://app`; during development, the origin of `WEB_BASE_URL_OVERRIDE`), `about:`, and `blob:` URLs created by the shell's own page (`ShellSafety.isAllowedInAppNavigation`). http(s) links the user clicks open in the system browser; anything else (the page's own code changing the URL, form submissions, redirects) is blocked. Previously only "the user clicking a link to another domain" was intercepted and every other navigation went through; this shell has no address bar, so with any website opened inside it the user couldn't tell whether they were still looking at this app.
 - **No new windows**: `window.open()` and `target="_blank"` never open inside the app; http(s) links the user clicks go to the system browser. New windows were left over from running Google sign-in inside an embedded WebView, which opened another WKWebView with the same configuration; since sign-in moved to the system browser they are no longer needed.
 - The page itself also has a CSP (see "Page Security Settings" in `zh-cn-to-tw-web`'s README). WebKit's `'self'` doesn't match the custom scheme, so the CSP must spell out `zhcntotw:`, or all of the app's own scripts are blocked.
@@ -376,8 +376,8 @@ Two separate scripts, not one script with a flag — they correspond to two inde
 
 ```bash
 cd zh-cn-to-tw-mac
-bash packaging/build_app_11_plus.sh debug   # macOS 11+ build
-bash packaging/build_app_10_15.sh debug     # macOS 10.15 build (bundled Tesseract OCR)
+bash packaging/build_app_11_plus.sh release   # macOS 11+ build
+bash packaging/build_app_10_15.sh release     # macOS 10.15 build (bundled Tesseract OCR)
 ```
 
 Each does:
@@ -402,8 +402,8 @@ already-built `.app` into a DMG" step — they do **not** re-run
 `.app` first per the steps above, then:
 
 ```bash
-bash packaging/build_dmg_11_plus.sh debug   # 11+ only
-bash packaging/build_dmg_10_15.sh debug     # 10.15 only
+bash packaging/build_dmg_11_plus.sh release   # 11+ only
+bash packaging/build_dmg_10_15.sh release     # 10.15 only
 ```
 
 `build_dmg_all.sh` (the top-level meta-repo's `build_mac_dmg.sh` calls it
@@ -415,7 +415,7 @@ source), then packages both DMGs, so any source change is guaranteed
 to show up in its output:
 
 ```bash
-bash packaging/build_dmg_all.sh debug       # swift build through both DMGs, one shot
+bash packaging/build_dmg_all.sh release       # swift build through both DMGs, one shot
 ```
 
 **This is a lesson from a real incident**: `build_dmg_all.sh` used to

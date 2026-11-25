@@ -29,7 +29,7 @@ export LC_ALL=C
 # 執行時算出來的會是 symlink 自己所在的位置，不是這支腳本實際所在的
 # 位置（見 build_dmg.sh 同樣的處理）。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-CONFIG="${1:-debug}"
+CONFIG="${1:-release}"
 # 裸執行檔的名字（Package.swift 的 target 名稱、也是 Info.plist 的
 # CFBundleExecutable）——這是內部實作細節，使用者從來不會直接看到這個
 # 檔名（Finder 只會顯示 .app bundle 本身的名字），維持 ZhCnToTw 不用

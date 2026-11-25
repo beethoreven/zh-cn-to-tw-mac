@@ -15,7 +15,7 @@ export LC_ALL=C
 # 同樣的處理。這支腳本放在 packaging/ 底下，REPO_ROOT 算出來的是
 # zh-cn-to-tw-mac 這個 repo 的根目錄，跟 11+ 那支一致。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-CONFIG="${1:-debug}"
+CONFIG="${1:-release}"
 # 跟 build_app_10_15.sh 的 APP_DISPLAY_NAME 保持一致——原因見
 # build_dmg_11_plus.sh 同一段說明。
 APP_DISPLAY_NAME="繁化助手"

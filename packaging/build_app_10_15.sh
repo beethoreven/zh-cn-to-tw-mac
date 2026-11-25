@@ -22,7 +22,7 @@ export LC_ALL=C
 # packaging/ 底下（不是 Legacy/ 底下），REPO_ROOT 算出來的還是
 # zh-cn-to-tw-mac 這個 repo 的根目錄，跟 11+ 那支一致。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-CONFIG="${1:-debug}"
+CONFIG="${1:-release}"
 PACKAGE_PATH="$REPO_ROOT/Legacy"
 
 # 裸執行檔的名字（Legacy/Package.swift 的 target 名稱）——刻意跟 11+

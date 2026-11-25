@@ -21,7 +21,7 @@ set -euo pipefail
 export LC_ALL=C
 
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-CONFIG="${1:-debug}"
+CONFIG="${1:-release}"
 
 echo "==> [1/4] swift build + 組裝 .app（11+）"
 bash "$REPO_ROOT/packaging/build_app_11_plus.sh" "$CONFIG"

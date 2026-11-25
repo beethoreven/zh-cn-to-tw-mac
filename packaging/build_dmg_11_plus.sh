@@ -27,7 +27,7 @@ export LC_ALL=C
 # ——直接對 BASH_SOURCE[0] 取 dirname 的話，經由 symlink 執行時算出來
 # 的會是 symlink 自己所在的位置，不是這支腳本實際所在的位置。
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-CONFIG="${1:-debug}"
+CONFIG="${1:-release}"
 # 跟 build_app.sh 的 APP_DISPLAY_NAME 保持一致——這是 .app bundle 資料夾
 # 本身的名字，也是 DMG 掛載時使用者看到的磁碟區名稱、DMG 檔名本身，
 # 三個地方統一，不然「Finder 看到的檔名」「DMG 打開後看到的名稱」
